@@ -4,9 +4,7 @@ module.exports = {
   // list all category
   async listAllCategorysAsync(req, res) {
     try {
-      const categorys = await Category.find().sort({
-        createdAt: -1,
-      });
+      const categorys = await Category.find().sort();
 
       res.status(200).send({
         categorys,

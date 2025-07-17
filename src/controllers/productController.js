@@ -4,10 +4,7 @@ module.exports = {
   // list all product
   async listAllProductsAsync(req, res) {
     try {
-      const products = await Product.find().sort({
-        createdAt: -1,
-      });
-
+      const products = await Product.find().sort();
       res.status(200).send({
         products,
       });
