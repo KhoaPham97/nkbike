@@ -56,7 +56,7 @@ module.exports = {
             "image",
             "detail",
             "price",
-            "orginalPrice",
+            "originalPrice",
             "categoryId",
           ];
 
