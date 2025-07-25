@@ -15,18 +15,13 @@ const { validateHuman } = require("../middlewares/isHuman");
 const router = express.Router();
 
 // User and Admin access only
-router.post("/api/order", auth, validateHuman, OrderController.addOrderItems);
+router.post("/api/order", OrderController.addOrderItems);
 router.get("/api/order/:id", auth, OrderController.getOrder);
 router.delete("/api/order/:id", auth, OrderController.deleteOrder);
 
 // Admin access only
 // Get all the orders from the database
-router.get("/api/orders", auth, adminAuth, OrderController.getAllOrders);
-router.patch(
-    "/api/order/:id/deliver",
-    auth,
-    adminAuth,
-    OrderController.updateOrderToDelivered
-);
+router.get("/api/orders", OrderController.getAllOrders);
+router.patch("/api/order/:id/deliver", OrderController.updateOrderToDelivered);
 
 module.exports = router;
