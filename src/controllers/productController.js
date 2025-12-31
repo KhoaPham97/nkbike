@@ -1,4 +1,5 @@
 const { Product } = require("../models/products");
+const { Category } = require("../models/category");
 
 module.exports = {
   // list all product
@@ -18,7 +19,6 @@ module.exports = {
 
     try {
       const foundProduct = await Product.findById(productId);
-
       res.status(200).send(foundProduct);
     } catch (error) {
       res.status(404).send({ message: error.message });
@@ -43,6 +43,34 @@ module.exports = {
       res.status(400).send({ message: error.message });
     }
   },
+  // get product
+  async getProductByCategory(req, res, next) {
+    try {
+      const categoryId = req.params.id;
+      const products = await Product.find({ categoryId: categoryId });
+      res.status(200).send({
+        products,
+      });
+    } catch (error) {
+      res.status(404).send({ message: error.message });
+    }
+  },
+  async searchProduct(req, res, next) {
+    try {
+      const search = req.query.q;
+      const searchArray = [{ title: { $regex: search, $options: "i" } }];
+
+      const products = await Product.find({ $or: searchArray }).populate(
+        "title"
+      );
+      res.status(200).send({
+        products,
+      });
+    } catch (error) {
+      res.status(404).send({ message: error.message });
+    }
+  },
+
   // update product
   async updateProductAsync(req, res, next) {
     try {
@@ -52,18 +80,25 @@ module.exports = {
           // const propsToUpdate = Object.keys(req.body[i]);
           const category = await Product.findById(categoryId);
           const array1 = [
-            "name",
-            "image",
+            "title",
+            "images",
             "detail",
             "price",
+            "thumbnail",
+            "rating",
             "originalPrice",
             "categoryId",
+            "stock",
+            "qty",
+            "brand",
           ];
-
-          await array1.forEach((prop) => {
+          await Object.keys(req.body[j]).forEach(function (prop) {
             category[prop] = req.body[j][prop];
           });
-          // console.log("category", category);
+          // await req.body[j].forEach((prop) => {
+          //   category[prop] = req.body[j][prop];
+          // });
+
           await category.save();
         })(i);
       }

@@ -27,7 +27,11 @@ router.delete("/api/product/all", productController.deleteAll);
 // Public access
 router.get("/api/products", productController.listAllProductsAsync);
 router.get("/api/product/:id", productController.getProductAsync);
-
+router.get(
+  "/api/products/category/:id",
+  productController.getProductByCategory
+);
+router.get("/api/products/search", productController.searchProduct);
 // Get Products by category
 router.get("/api/products/men", productQuery, productController.getMenProduct);
 router.get(
@@ -60,11 +64,6 @@ router.get(
 router.post("/api/product", productController.createProductAsync);
 router.patch("/api/product", productController.updateProductAsync);
 
-router.delete(
-  "/api/product/:id",
-  auth,
-  adminAuth,
-  productController.deleteProductAsync
-);
+router.delete("/api/product/:id", productController.deleteProductAsync);
 
 module.exports = router;
