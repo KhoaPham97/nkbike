@@ -5,12 +5,62 @@ module.exports = {
   // list all product
   async listAllProductsAsync(req, res) {
     try {
-      const products = await Product.find().sort();
-      res.status(200).send({
+      const { type } = req.query;
+
+      // =====================================================
+      // CASE 1: LOAD ALL
+      // type=all hoặc không truyền type
+      // Không paging
+      // =====================================================
+      if (!type || type === "all") {
+        const products = await Product.find({}).sort({ created_at: -1 }).lean();
+
+        return res.status(200).json({
+          products,
+          total: products.length,
+        });
+      }
+
+      // =====================================================
+      // CASE 2: LOAD THEO TYPE
+      // Có paging
+      // =====================================================
+
+      const page = Math.max(Number(req.query.page) || 1, 1);
+
+      const limit = Math.min(Number(req.query.limit) || 40, 100);
+
+      const skip = (page - 1) * limit;
+
+      const filter = {
+        type: type,
+      };
+
+      const [products, total] = await Promise.all([
+        Product.find(filter).sort({ title: 1 }).skip(skip).limit(limit).lean(),
+
+        Product.countDocuments(filter),
+      ]);
+
+      const hasMore = page * limit < total;
+
+      return res.status(200).json({
         products,
+
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+          hasMore,
+        },
       });
     } catch (error) {
-      res.status(404).send({ message: error.message });
+      console.error("listAllProductsAsync error:", error);
+
+      return res.status(500).json({
+        message: error.message,
+      });
     }
   },
   // get product by Id
@@ -61,7 +111,7 @@ module.exports = {
       const searchArray = [{ title: { $regex: search, $options: "i" } }];
 
       const products = await Product.find({ $or: searchArray }).populate(
-        "title"
+        "title",
       );
       res.status(200).send({
         products,
@@ -91,6 +141,7 @@ module.exports = {
             "stock",
             "qty",
             "brand",
+            "description",
           ];
           await Object.keys(req.body[j]).forEach(function (prop) {
             category[prop] = req.body[j][prop];

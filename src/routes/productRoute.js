@@ -29,7 +29,7 @@ router.get("/api/products", productController.listAllProductsAsync);
 router.get("/api/product/:id", productController.getProductAsync);
 router.get(
   "/api/products/category/:id",
-  productController.getProductByCategory
+  productController.getProductByCategory,
 );
 router.get("/api/products/search", productController.searchProduct);
 // Get Products by category
@@ -37,27 +37,27 @@ router.get("/api/products/men", productQuery, productController.getMenProduct);
 router.get(
   "/api/products/women",
   productQuery,
-  productController.getWomenProduct
+  productController.getWomenProduct,
 );
 router.get(
   "/api/products/discount",
   productQuery,
-  productController.getDiscountedProduct
+  productController.getDiscountedProduct,
 );
 router.get(
   "/api/products/kids",
   productQuery,
-  productController.getKidsProduct
+  productController.getKidsProduct,
 );
 router.get(
   "/api/products/new-arrivals",
-  productController.getNewArrivalsProduct
+  productController.getNewArrivalsProduct,
 );
 
 router.get(
   "/api/products-you-may-like",
   productsYouMayLike,
-  productController.getProductsYouMayLike
+  productController.getProductsYouMayLike,
 );
 
 // Admin access only

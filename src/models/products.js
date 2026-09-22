@@ -53,8 +53,10 @@ const productSchema = mongoose.Schema(
   },
   {
     versionKey: false,
-  }
+  },
 );
+// ⭐ THÊM INDEX Ở ĐÂY
+productSchema.index({ created_at: -1 });
 
 const Product = mongoose.model("products", productSchema);
 module.exports = { productSchema, Product };

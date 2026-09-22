@@ -4,9 +4,7 @@ const db =
   "mongodb+srv://khoapham:khoa0403@cluster0.mtfxh4m.mongodb.net/nhatkhang";
 
 mongoose
-  .connect(db, {
-    useUnifiedTopology: true,
-  })
+  .connect(db)
   .then(() => {
     console.log("Successfully connected to database");
   })
