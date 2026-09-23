@@ -5,7 +5,37 @@ module.exports = {
   // list all product
   async listAllProductsAsync(req, res) {
     try {
-      const { type } = req.query;
+      const { type, search = "" } = req.query;
+
+      // =====================================================
+      // SEARCH
+      // =====================================================
+      const keyword = search.trim();
+
+      const searchFilter = keyword
+        ? {
+            $or: [
+              {
+                title: {
+                  $regex: keyword,
+                  $options: "i",
+                },
+              },
+              {
+                brand: {
+                  $regex: keyword,
+                  $options: "i",
+                },
+              },
+              {
+                code: {
+                  $regex: keyword,
+                  $options: "i",
+                },
+              },
+            ],
+          }
+        : {};
 
       // =====================================================
       // CASE 1: LOAD ALL
@@ -13,7 +43,9 @@ module.exports = {
       // Không paging
       // =====================================================
       if (!type || type === "all") {
-        const products = await Product.find({}).sort({ created_at: -1 }).lean();
+        const products = await Product.find(searchFilter)
+          .sort({ created_at: -1 })
+          .lean();
 
         return res.status(200).json({
           products,
@@ -23,7 +55,7 @@ module.exports = {
 
       // =====================================================
       // CASE 2: LOAD THEO TYPE
-      // Có paging
+      // Có paging + search
       // =====================================================
 
       const page = Math.max(Number(req.query.page) || 1, 1);
@@ -32,8 +64,13 @@ module.exports = {
 
       const skip = (page - 1) * limit;
 
+      // =====================================================
+      // FILTER TYPE + SEARCH
+      // =====================================================
+
       const filter = {
-        type: type,
+        type,
+        ...searchFilter,
       };
 
       const [products, total] = await Promise.all([
@@ -124,39 +161,57 @@ module.exports = {
   // update product
   async updateProductAsync(req, res, next) {
     try {
-      for (var i = 0; i < req.body.length; i++) {
-        (async function (j) {
-          const categoryId = req.body[i]._id;
-          // const propsToUpdate = Object.keys(req.body[i]);
-          const category = await Product.findById(categoryId);
-          const array1 = [
-            "title",
-            "images",
-            "detail",
-            "price",
-            "thumbnail",
-            "rating",
-            "originalPrice",
-            "categoryId",
-            "stock",
-            "qty",
-            "brand",
-            "description",
-          ];
-          await Object.keys(req.body[j]).forEach(function (prop) {
-            category[prop] = req.body[j][prop];
+      const allowedFields = [
+        "title",
+        "images",
+        "detail",
+        "price",
+        "thumbnail",
+        "rating",
+        "originalPrice",
+        "categoryId",
+        "stock",
+        "brand",
+        "description",
+        "variants",
+      ];
+
+      await Promise.all(
+        req.body.map(async (productData) => {
+          const product = await Product.findById(productData._id);
+
+          if (!product) {
+            throw new Error(`Không tìm thấy sản phẩm: ${productData._id}`);
+          }
+
+          // ==========================================
+          // Cập nhật các field
+          // ==========================================
+          allowedFields.forEach((field) => {
+            if (productData[field] !== undefined) {
+              product[field] = productData[field];
+            }
           });
-          // await req.body[j].forEach((prop) => {
-          //   category[prop] = req.body[j][prop];
-          // });
 
-          await category.save();
-        })(i);
-      }
+          // ==========================================
+          // TỰ ĐỘNG TÍNH TỔNG QTY TỪ VARIANTS
+          // ==========================================
+          if (Array.isArray(product.variants)) {
+            product.qty = product.variants.reduce((total, variant) => {
+              return total + (Number(variant.qty) || 0);
+            }, 0);
+          }
 
-      res.status(200).send("successfully updated product");
+          await product.save();
+        }),
+      );
+
+      return res.status(200).json({
+        message: "Successfully updated products",
+        total: req.body.length,
+      });
     } catch (error) {
-      res.send({
+      return res.status(500).json({
         message: error.message,
       });
     }
