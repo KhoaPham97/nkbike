@@ -61,7 +61,7 @@ router.get(
 );
 
 // Admin access only
-router.post("/api/product", productController.createProductAsync);
+router.post("/api/product", productController.createProduct);
 router.patch("/api/product", productController.updateProductAsync);
 
 router.delete("/api/product/:id", productController.deleteProductAsync);

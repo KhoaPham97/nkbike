@@ -120,14 +120,62 @@ module.exports = {
     }
   },
   // create a new product
-  async createProductAsync(req, res) {
-    const productObject = req.body;
+  async createProduct(req, res) {
     try {
-      await Product.create(productObject);
-      res.status(201).send("Successfully created a new product");
+      const data = req.body;
+
+      const product = new Product({
+        title: data.title,
+        price: data.price || "0",
+        rating: Number(data.rating || 0),
+        originalPrice: data.originalPrice || "",
+
+        thumbnail: data.thumbnail || "",
+
+        images: Array.isArray(data.images) ? data.images : [],
+
+        detail: data.detail || "",
+
+        description: data.description || "",
+
+        qty: Number(data.qty || 0),
+
+        stock: data.stock || String(data.qty || 0),
+
+        brand: data.brand || "",
+
+        categoryId: data.categoryId || null,
+
+        category: data.category || "",
+
+        variants: Array.isArray(data.variants)
+          ? data.variants.map((variant) => ({
+              name: variant.name || "",
+
+              price: String(variant.price || "0"),
+
+              qty: Number(variant.qty || 0),
+            }))
+          : [],
+
+        created_at: new Date(),
+        updated_at: new Date(),
+      });
+
+      await product.save();
+
+      return res.status(201).json({
+        success: true,
+        message: "Thêm sản phẩm thành công",
+        product,
+      });
     } catch (error) {
-      console.log(error.message);
-      res.status(400).send({ message: error.message });
+      console.error("createProduct:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Không thể thêm sản phẩm",
+      });
     }
   },
   // get product

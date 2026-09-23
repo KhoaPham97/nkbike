@@ -1,27 +1,11 @@
 const express = require("express");
-
-// Import auth middleware
-const auth = require("../middlewares/auth");
-
-// Import Admin auth middleware
-const adminAuth = require("../middlewares/adminAuth");
-
-// Import Order Controller
-const OrderController = require("../controllers/orderController");
-
-// Is Human? Middleware
-const { validateHuman } = require("../middlewares/isHuman");
-
 const router = express.Router();
 
-// User and Admin access only
-router.post("/api/order", OrderController.addOrderItems);
-router.get("/api/order/:id", auth, OrderController.getOrder);
-router.delete("/api/order/:id", auth, OrderController.deleteOrder);
+const orderController = require("../controllers/orderController");
 
-// Admin access only
-// Get all the orders from the database
-router.get("/api/orders", OrderController.getAllOrders);
-router.patch("/api/order/:id/deliver", OrderController.updateOrderToDelivered);
+router.get("/", orderController.listOrdersAsync);
+router.get("/:id", orderController.getOrderByIdAsync);
+router.post("/", orderController.createOrderAsync);
+router.patch("/:id/status", orderController.updateOrderStatusAsync);
 
 module.exports = router;

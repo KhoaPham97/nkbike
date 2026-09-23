@@ -1,54 +1,70 @@
 const mongoose = require("mongoose");
 
-const Schema = mongoose.Schema;
-
 const customerSchema = new mongoose.Schema(
   {
     name: {
       type: String,
-      trim: true,
-    },
-    username: {
-      type: String,
       required: true,
-      minlength: 4,
-      maxlength: 20,
-      trim: true,
-      unique: true,
-    },
-    password: {
-      type: String,
-      trim: true,
-      required: true,
-    },
-    email: {
-      type: String,
-      required: true,
-      unique: true,
-    },
-    location: {
-      type: String,
       trim: true,
     },
+
     phone: {
       type: String,
+      default: "",
       trim: true,
     },
-    orders: [
-      {
-        type: Schema.Types.ObjectId,
-        ref: "orders",
-      },
-    ],
 
-    createdAt: {
+    address: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    email: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    note: {
+      type: String,
+      default: "",
+    },
+
+    totalOrders: {
+      type: Number,
+      default: 0,
+    },
+
+    totalSpent: {
+      type: Number,
+      default: 0,
+    },
+
+    debt: {
+      type: Number,
+      default: 0,
+    },
+
+    created_at: {
       type: Date,
-      default: Date.now(),
-      required: true,
+      default: Date.now,
+    },
+
+    updated_at: {
+      type: Date,
+      default: Date.now,
     },
   },
-  { timestamps: true }
+  {
+    versionKey: false,
+  },
 );
 
-const Customers = mongoose.model("customers", userSchema);
-module.exports = { userSchema, Customers };
+customerSchema.index({ phone: 1 });
+customerSchema.index({ created_at: -1 });
+
+const Customer =
+  mongoose.models.customers || mongoose.model("customers", customerSchema);
+
+module.exports = Customer;

@@ -1,70 +1,159 @@
 const mongoose = require("mongoose");
 
-var Schema = mongoose.Schema;
-var ObjectIdSchema = Schema.ObjectId;
-var ObjectId = mongoose.Types.ObjectId;
-const orderSchema = new mongoose.Schema(
+const orderItemSchema = new mongoose.Schema(
   {
-    id: {
+    productId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "products",
+      required: true,
+    },
+
+    productTitle: {
+      type: String,
+      default: "",
+    },
+
+    productCode: {
+      type: String,
+      default: "",
+    },
+
+    variantName: {
+      type: String,
+      default: "",
+    },
+
+    price: {
       type: Number,
-    },
-    status: { type: String },
-    createdAt: {
-      type: Date,
-      default: Date.now,
-    },
-    receivedAt: {
-      type: Date,
-      default: Date.now,
+      default: 0,
     },
 
-    items: [
-      {
-        product: {
-          _id: {
-            type: ObjectIdSchema,
-
-            ref: "products",
-          },
-          category: {
-            _id: {
-              type: ObjectIdSchema,
-
-              ref: "categories",
-            },
-            name: {
-              type: String,
-            },
-            image: {
-              type: String,
-              image: Buffer,
-            },
-          },
-          price: { type: String },
-          originalPrice: { type: String },
-          name: { type: String, trim: true },
-          image: [{ type: String }],
-          detail: { type: String },
-        },
-        quantity: { type: Number },
-      },
-    ],
-
-    delivery: {
-      id: { type: Number },
-      type: { type: String },
-      alias: { type: String },
-      address: { type: String },
-      name: { type: String },
-      phone: { type: String },
-      image: { type: String, image: Buffer },
-      location: { type: Object },
+    qty: {
+      type: Number,
+      default: 1,
     },
-    total: { type: Number },
-    note: { type: String },
+
+    total: {
+      type: Number,
+      default: 0,
+    },
+
+    thumbnail: {
+      type: String,
+      default: "",
+    },
   },
-  { timestamps: true }
+  {
+    _id: false,
+  },
 );
 
-const Order = mongoose.model("orders", orderSchema);
-module.exports = { orderSchema, Order };
+const orderSchema = new mongoose.Schema(
+  {
+    code: {
+      type: String,
+      required: true,
+      unique: true,
+      index: true,
+    },
+
+    customerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "customers",
+      default: null,
+    },
+
+    customerName: {
+      type: String,
+      default: "Khách lẻ",
+    },
+
+    customerPhone: {
+      type: String,
+      default: "",
+    },
+
+    customerAddress: {
+      type: String,
+      default: "",
+    },
+
+    items: {
+      type: [orderItemSchema],
+      default: [],
+    },
+
+    subtotal: {
+      type: Number,
+      default: 0,
+    },
+
+    discount: {
+      type: Number,
+      default: 0,
+    },
+
+    shippingFee: {
+      type: Number,
+      default: 0,
+    },
+
+    totalAmount: {
+      type: Number,
+      default: 0,
+    },
+
+    paidAmount: {
+      type: Number,
+      default: 0,
+    },
+
+    debt: {
+      type: Number,
+      default: 0,
+    },
+
+    paymentMethod: {
+      type: String,
+      enum: ["cash", "transfer", "cod", "debt"],
+      default: "cash",
+    },
+
+    status: {
+      type: String,
+      enum: ["pending", "confirmed", "shipping", "completed", "cancelled"],
+      default: "pending",
+    },
+
+    note: {
+      type: String,
+      default: "",
+    },
+
+    created_at: {
+      type: Date,
+      default: Date.now,
+    },
+
+    updated_at: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  {
+    versionKey: false,
+  },
+);
+
+orderSchema.index({
+  created_at: -1,
+});
+
+orderSchema.index({
+  customerId: 1,
+  created_at: -1,
+});
+
+const Order = mongoose.models.orders || mongoose.model("orders", orderSchema);
+
+module.exports = Order;

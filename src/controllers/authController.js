@@ -3,107 +3,276 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 
 module.exports = {
+  // =========================================================
+  // SIGN IN
+  // =========================================================
   async signIn(req, res) {
-    const { password, username } = req.body;
-
     try {
-      const founduser = await User.findOne({ username });
+      const { username, password } = req.body;
 
-      if (!founduser) {
-        throw new Error();
-      }
+      console.log("=================================");
+      console.log("ADMIN LOGIN");
+      console.log("Username:", username);
+      console.log("Password:", password ? "******" : "EMPTY");
+      console.log("JWT_SECRET:", process.env.JWT_SECRET ? "OK" : "UNDEFINED");
+      console.log("=================================");
 
-      try {
-        var isPasswordValid = bcrypt.compareSync(password, founduser.password);
-        if (!isPasswordValid) {
-          throw new Error();
-        }
-        // const token = jwt.sign({ id: founduser._id }, process.env.JWT_SECRET);
-        // founduser.tokens = founduser.tokens.concat({ token });
-        // await founduser.save();
-        var user = founduser;
-
-        res.status(200).send(user);
-      } catch (error) {
-        res.status(409).send({
+      // -------------------------------------------------------
+      // Validate
+      // -------------------------------------------------------
+      if (!username || !password) {
+        return res.status(400).json({
+          success: false,
           auth: false,
-          message: "Incorrect Password",
+          message: "Vui lòng nhập tài khoản và mật khẩu",
         });
       }
-    } catch (err) {
-      res.status(500).send({
-        auth: false,
-        token: undefined,
-        message: "User not found",
-      });
-    }
-  },
-  async signUp(req, res) {
-    var newUser = {
-      username: req.body.username,
-      // email: req.body.email,
-      password: req.body.password,
-      // language: req.body.language,
-    };
 
-    try {
-      if (newUser.password === null || newUser.password === undefined) {
-        throw new Error("Please enter your password");
+      // -------------------------------------------------------
+      // Tìm user
+      // -------------------------------------------------------
+      const foundUser = await User.findOne({
+        username: username.trim(),
+      });
+
+      if (!foundUser) {
+        console.log("LOGIN RESULT: USER NOT FOUND");
+
+        return res.status(401).json({
+          success: false,
+          auth: false,
+          message: "Tài khoản hoặc mật khẩu không đúng",
+        });
       }
-      var hashedPassword = bcrypt.hashSync(
-        newUser.password,
-        8
-        // process.env.HASH_SALT,
+
+      console.log("User found:", foundUser.username);
+      console.log("Role:", foundUser.role);
+      console.log("MemberShip:", foundUser.memberShip);
+
+      // -------------------------------------------------------
+      // Kiểm tra password
+      // -------------------------------------------------------
+      const isPasswordValid = await bcrypt.compare(
+        password,
+        foundUser.password,
       );
-      newUser.password = hashedPassword;
-    } catch (error) {
-      res.status(409).send({ message: error.message });
-    }
 
-    try {
-      const user = await User.create(newUser);
-      // const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
-      // user.tokens = user.tokens.concat({ token });
-      user.save();
-      res.status(200).send({
-        _id: user._id,
-        username: user.username,
-        // email: user.email,
-        // role: user.role,
-        // memberShip: user.memberShip,
-        // language: user.language,
-        // token: token,
+      console.log("Password valid:", isPasswordValid);
+
+      if (!isPasswordValid) {
+        return res.status(401).json({
+          success: false,
+          auth: false,
+          message: "Tài khoản hoặc mật khẩu không đúng",
+        });
+      }
+
+      // -------------------------------------------------------
+      // Kiểm tra quyền admin
+      // -------------------------------------------------------
+      const isAdmin =
+        foundUser.role === "admin" || foundUser.memberShip === "admin";
+
+      console.log("Is admin:", isAdmin);
+
+      if (!isAdmin) {
+        return res.status(403).json({
+          success: false,
+          auth: false,
+          message: "Tài khoản không có quyền quản trị",
+        });
+      }
+
+      // -------------------------------------------------------
+      // Kiểm tra JWT_SECRET
+      // -------------------------------------------------------
+      if (!process.env.JWT_SECRET) {
+        console.error("ERROR: JWT_SECRET chưa được cấu hình");
+
+        return res.status(500).json({
+          success: false,
+          auth: false,
+          message: "Server chưa cấu hình JWT_SECRET",
+        });
+      }
+
+      // -------------------------------------------------------
+      // Tạo JWT
+      // -------------------------------------------------------
+      const token = jwt.sign(
+        {
+          id: foundUser._id.toString(),
+          username: foundUser.username,
+          role: foundUser.role,
+          memberShip: foundUser.memberShip,
+        },
+        process.env.JWT_SECRET,
+        {
+          expiresIn: "7d",
+        },
+      );
+
+      console.log("JWT created: OK");
+
+      // -------------------------------------------------------
+      // Lưu token vào database
+      // -------------------------------------------------------
+      foundUser.tokens = Array.isArray(foundUser.tokens)
+        ? foundUser.tokens
+        : [];
+
+      // Xóa token null / không hợp lệ
+      foundUser.tokens = foundUser.tokens.filter((item) => item && item.token);
+
+      foundUser.tokens.push({
+        token: token,
+      });
+
+      await foundUser.save();
+
+      // -------------------------------------------------------
+      // Tạo user response
+      // Không trả password và tokens
+      // -------------------------------------------------------
+      const user = foundUser.toObject();
+
+      delete user.password;
+      delete user.tokens;
+
+      // -------------------------------------------------------
+      // Response
+      // -------------------------------------------------------
+      return res.status(200).json({
+        success: true,
+        auth: true,
+        message: "Đăng nhập thành công",
+        token: token,
+        user: user,
       });
     } catch (error) {
-      var message = "Problem creating a new user";
-      const { keyValue } = error || {};
-      if (Object?.keys(keyValue || {})[0] === "username") {
-        message = `Username of ${keyValue.username} is already taken. Please enter another username.`;
-      }
-      //if(Object.keys(keyValue)[0] === 'email')
-      // if (Object?.keys(keyValue || {})[0] === "email") {
-      //   message = `Email address of ${keyValue.email} is already taken. Please enter another email address.`;
-      // }
+      console.error("signIn error:", error);
 
-      res.status(409).send({
-        message: message,
+      return res.status(500).json({
+        success: false,
+        auth: false,
+        message: error?.message || "Đăng nhập thất bại",
       });
     }
   },
-  async signOut(req, res) {
-    const { token, userId } = req.body;
 
+  // =========================================================
+  // SIGN UP
+  // =========================================================
+  async signUp(req, res) {
     try {
+      const { username, password } = req.body;
+
+      // -------------------------------------------------------
+      // Validate
+      // -------------------------------------------------------
+      if (!username || !username.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "Vui lòng nhập username",
+        });
+      }
+
+      if (!password) {
+        return res.status(400).json({
+          success: false,
+          message: "Vui lòng nhập password",
+        });
+      }
+
+      // -------------------------------------------------------
+      // Kiểm tra username đã tồn tại
+      // -------------------------------------------------------
+      const existingUser = await User.findOne({
+        username: username.trim(),
+      });
+
+      if (existingUser) {
+        return res.status(409).json({
+          success: false,
+          message: `Username ${username} đã tồn tại`,
+        });
+      }
+
+      // -------------------------------------------------------
+      // Hash password
+      // -------------------------------------------------------
+      const hashedPassword = await bcrypt.hash(password, 8);
+
+      // -------------------------------------------------------
+      // Create user
+      // -------------------------------------------------------
+      const user = await User.create({
+        username: username.trim(),
+        password: hashedPassword,
+      });
+
+      // -------------------------------------------------------
+      // Response
+      // -------------------------------------------------------
+      return res.status(201).json({
+        success: true,
+        message: "Tạo tài khoản thành công",
+        user: {
+          _id: user._id,
+          username: user.username,
+        },
+      });
+    } catch (error) {
+      console.error("signUp error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: error?.message || "Problem creating a new user",
+      });
+    }
+  },
+
+  // =========================================================
+  // SIGN OUT
+  // =========================================================
+  async signOut(req, res) {
+    try {
+      const { token, userId } = req.body;
+
+      if (!token || !userId) {
+        return res.status(400).json({
+          success: false,
+          message: "Thiếu token hoặc userId",
+        });
+      }
+
       const user = await User.findById(userId);
 
-      var filteredTokens = user.tokens.filter((t) => {
-        return t.token !== token;
-      });
-      user.tokens = filteredTokens;
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: "Không tìm thấy user",
+        });
+      }
+
+      user.tokens = Array.isArray(user.tokens) ? user.tokens : [];
+
+      user.tokens = user.tokens.filter((item) => item && item.token !== token);
+
       await user.save();
-      res.send({ message: "Successfully logged user out", logout: true });
+
+      return res.status(200).json({
+        success: true,
+        message: "Đăng xuất thành công",
+        logout: true,
+      });
     } catch (error) {
-      res.status(500).send({ message: "Failed to logout" });
+      console.error("signOut error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Không thể đăng xuất",
+      });
     }
   },
 };

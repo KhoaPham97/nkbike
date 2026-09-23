@@ -12,7 +12,6 @@ if (process.env.NODE_ENV === "development") {
   app.use(morgan("dev"));
 }
 //let __dirname = path.resolve();
-
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use(express.json({ limit: "50mb" }));
 
@@ -24,6 +23,9 @@ const stripeCheckoutRoute = require("./src/routes/stripeCheckoutRoute");
 const paypalCheckoutRoute = require("./src/routes/paypalCheckoutRoute");
 const cartRoute = require("./src/routes/cartRoute");
 const categoryRoute = require("./src/routes/categoryRoute");
+const customerRouter = require("./src/routes/customerRoute");
+const inventoryRouter = require("./src/routes/inventoryRouter");
+
 app.use(cors());
 
 // Connect to MongoDB
@@ -34,9 +36,10 @@ app.use(authRoute);
 app.use(categoryRoute);
 app.use(productRoute);
 app.use(userRoute);
-app.use(orderRoute);
 app.use(cartRoute);
 app.use(stripeCheckoutRoute);
 app.use(paypalCheckoutRoute);
-
+app.use("/api/order", orderRoute);
+app.use("/api/customers", customerRouter);
+app.use("/api/products/inventory", inventoryRouter);
 module.exports = app;
