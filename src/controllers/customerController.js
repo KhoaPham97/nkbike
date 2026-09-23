@@ -1,5 +1,5 @@
 const mongoose = require("mongoose");
-const Customer = require("../models/Customer");
+const Customer = require("../models/customer");
 
 // =====================================================
 // DANH SÁCH KHÁCH HÀNG
