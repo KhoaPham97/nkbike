@@ -2,6 +2,8 @@ const app = require("./app");
 const express = require("express");
 const path = require("path");
 
+console.log("NODE_ENV:", process.env.NODE_ENV);
+console.log("JWT_SECRET:", process.env.JWT_SECRET ? "ĐÃ CÓ" : "KHÔNG CÓ");
 if (process.env.NODE_ENV === "production") {
   app.use(express.static(path.join(__dirname, "../frontend/build")));
   app.get("*", (req, res) => {

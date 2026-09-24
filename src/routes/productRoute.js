@@ -61,9 +61,9 @@ router.get(
 );
 
 // Admin access only
-router.post("/api/product", productController.createProduct);
-router.patch("/api/product", productController.updateProductAsync);
+router.post("/api/products", productController.createProduct);
+router.patch("/api/products", productController.updateProductAsync);
 
-router.delete("/api/product/:id", productController.deleteProductAsync);
+router.delete("/api/products/:id", productController.deleteProductAsync);
 
 module.exports = router;

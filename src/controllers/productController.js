@@ -147,6 +147,7 @@ module.exports = {
         categoryId: data.categoryId || null,
 
         category: data.category || "",
+        type: data.type || "1",
 
         variants: Array.isArray(data.variants)
           ? data.variants.map((variant) => ({
@@ -222,7 +223,15 @@ module.exports = {
         "brand",
         "description",
         "variants",
+        "type", // ✅ THÊM TYPE
       ];
+
+      if (!Array.isArray(req.body)) {
+        return res.status(400).json({
+          success: false,
+          message: "Dữ liệu cập nhật phải là một mảng sản phẩm",
+        });
+      }
 
       await Promise.all(
         req.body.map(async (productData) => {
@@ -233,13 +242,43 @@ module.exports = {
           }
 
           // ==========================================
-          // Cập nhật các field
+          // KIỂM TRA TYPE
+          // ==========================================
+          if (
+            productData.type !== undefined &&
+            !["1", "2", "3"].includes(String(productData.type))
+          ) {
+            throw new Error(
+              `Type không hợp lệ cho sản phẩm: ${productData._id}. Type phải là 1, 2 hoặc 3`,
+            );
+          }
+
+          // ==========================================
+          // CẬP NHẬT CÁC FIELD
           // ==========================================
           allowedFields.forEach((field) => {
             if (productData[field] !== undefined) {
               product[field] = productData[field];
             }
           });
+
+          // ==========================================
+          // CHUẨN HÓA TYPE
+          // ==========================================
+          if (productData.type !== undefined) {
+            product.type = String(productData.type);
+          }
+
+          // ==========================================
+          // CHUẨN HÓA VARIANTS
+          // ==========================================
+          if (Array.isArray(productData.variants)) {
+            product.variants = productData.variants.map((variant) => ({
+              name: variant.name || "",
+              price: String(variant.price || "0"),
+              qty: Number(variant.qty || 0),
+            }));
+          }
 
           // ==========================================
           // TỰ ĐỘNG TÍNH TỔNG QTY TỪ VARIANTS
@@ -250,21 +289,29 @@ module.exports = {
             }, 0);
           }
 
+          // ==========================================
+          // UPDATED AT
+          // ==========================================
+          product.updated_at = new Date();
+
           await product.save();
         }),
       );
 
       return res.status(200).json({
+        success: true,
         message: "Successfully updated products",
         total: req.body.length,
       });
     } catch (error) {
+      console.error("updateProductAsync:", error);
+
       return res.status(500).json({
+        success: false,
         message: error.message,
       });
     }
   },
-
   async deleteProductAsync(req, res) {
     const productId = req.params.id;
     try {

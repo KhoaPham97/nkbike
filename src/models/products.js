@@ -75,6 +75,11 @@ const productSchema = mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    type: {
+      type: String,
+      enum: ["1", "2", "3"],
+      default: "1",
+    },
   },
   {
     versionKey: false,
