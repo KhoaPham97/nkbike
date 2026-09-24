@@ -26,6 +26,7 @@
         "mpath": "^0.8.4",
         "multer": "^2.4.0",
         "nodemon": "^2.0.12",
+        "openai": "^7.23.0",
         "stripe": "^8.170.0"
     },
     "allowScripts": {

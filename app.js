@@ -33,7 +33,7 @@ require("./src/db/mongoose");
 
 // connect routes
 app.use(authRoute);
-app.use(categoryRoute);
+app.use("/api", categoryRoute);
 app.use(productRoute);
 app.use(userRoute);
 app.use(cartRoute);

@@ -43,9 +43,50 @@ module.exports = {
       // Không paging
       // =====================================================
       if (!type || type === "all") {
-        const products = await Product.find(searchFilter)
-          .sort({ created_at: -1 })
-          .lean();
+        const products = await Product.aggregate([
+          {
+            $match: searchFilter,
+          },
+
+          // qty đang là String => chuyển sang Number
+          {
+            $addFields: {
+              qtyNumber: {
+                $convert: {
+                  input: "$qty",
+                  to: "double",
+                  onError: 0,
+                  onNull: 0,
+                },
+              },
+            },
+          },
+
+          // Ưu tiên qty > 0
+          {
+            $addFields: {
+              inStock: {
+                $cond: [{ $gt: ["$qtyNumber", 0] }, 1, 0],
+              },
+            },
+          },
+
+          // Còn hàng trước -> title A-Z
+          {
+            $sort: {
+              inStock: -1,
+              title: 1,
+            },
+          },
+
+          // Không trả field tạm
+          {
+            $project: {
+              qtyNumber: 0,
+              inStock: 0,
+            },
+          },
+        ]);
 
         return res.status(200).json({
           products,
@@ -73,11 +114,69 @@ module.exports = {
         ...searchFilter,
       };
 
-      const [products, total] = await Promise.all([
-        Product.find(filter).sort({ title: 1 }).skip(skip).limit(limit).lean(),
+      // =====================================================
+      // GET PRODUCTS
+      // =====================================================
 
-        Product.countDocuments(filter),
+      const products = await Product.aggregate([
+        {
+          $match: filter,
+        },
+
+        // qty String -> Number
+        {
+          $addFields: {
+            qtyNumber: {
+              $convert: {
+                input: "$qty",
+                to: "double",
+                onError: 0,
+                onNull: 0,
+              },
+            },
+          },
+        },
+
+        // Ưu tiên qty > 0
+        {
+          $addFields: {
+            inStock: {
+              $cond: [{ $gt: ["$qtyNumber", 0] }, 1, 0],
+            },
+          },
+        },
+
+        // Còn hàng trước -> title A-Z
+        {
+          $sort: {
+            inStock: -1,
+            title: 1,
+          },
+        },
+
+        // Pagination
+        {
+          $skip: skip,
+        },
+
+        {
+          $limit: limit,
+        },
+
+        // Xóa field tạm
+        {
+          $project: {
+            qtyNumber: 0,
+            inStock: 0,
+          },
+        },
       ]);
+
+      // =====================================================
+      // COUNT
+      // =====================================================
+
+      const total = await Product.countDocuments(filter);
 
       const hasMore = page * limit < total;
 

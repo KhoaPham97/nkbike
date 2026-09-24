@@ -4,6 +4,10 @@ const path = require("path");
 
 console.log("NODE_ENV:", process.env.NODE_ENV);
 console.log("JWT_SECRET:", process.env.JWT_SECRET ? "ĐÃ CÓ" : "KHÔNG CÓ");
+console.log(
+  "OPENAI_API_KEY:",
+  process.env.OPENAI_API_KEY ? "ĐÃ CÓ KEY" : "KHÔNG CÓ KEY",
+);
 if (process.env.NODE_ENV === "production") {
   app.use(express.static(path.join(__dirname, "../frontend/build")));
   app.get("*", (req, res) => {

@@ -1,197 +1,186 @@
 const { Category } = require("../models/category");
 
 module.exports = {
-  // list all category
-  async listAllCategorysAsync(req, res) {
+  // =====================================================
+  // GET ALL CATEGORIES
+  // GET /api/categorys
+  // =====================================================
+  async getCategories(req, res) {
     try {
-      const categorys = await Category.find().sort();
+      const categories = await Category.find({}).sort({ name: 1 }).lean();
 
-      res.status(200).send({
-        categorys,
+      return res.status(200).json({
+        success: true,
+        categorys: categories,
+        total: categories.length,
       });
     } catch (error) {
-      res.status(404).send({ message: error.message });
+      console.error("getCategories error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Không thể lấy danh mục",
+      });
     }
   },
 
-  // create a new category
-  async createcategoryAsync(req, res) {
-    const categoryObject = req.body;
-    console.log("categoryObject", req);
+  // =====================================================
+  // GET CATEGORY BY ID
+  // GET /api/categorys/:id
+  // =====================================================
+  async getCategoryById(req, res) {
     try {
-      await Category.create(categoryObject);
-      res.status(201).send("Successfully created a new category");
-    } catch (error) {
-      console.log(error.message);
-      res.status(400).send({ message: error.message });
-    }
-  },
-  // update category
-  async updateCategoryAsync(req, res, next) {
-    try {
-      for (var i = 0; i < req.body.length; i++) {
-        (async function (j) {
-          const categoryId = req.body[i]._id;
-          // const propsToUpdate = Object.keys(req.body[i]);
-          const category = await Category.findById(categoryId);
-          const array1 = ["name", "image"];
+      const { id } = req.params;
 
-          await array1.forEach((prop) => {
-            category[prop] = req.body[j][prop];
-          });
-          // console.log("category", category);
-          await category.save();
-        })(i);
+      const category = await Category.findById(id).lean();
+
+      if (!category) {
+        return res.status(404).json({
+          success: false,
+          message: "Không tìm thấy danh mục",
+        });
       }
 
-      res.status(200).send("successfully updated category");
+      return res.status(200).json({
+        success: true,
+        category,
+      });
     } catch (error) {
-      res.send({
-        message: error.message,
+      console.error("getCategoryById error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Không thể lấy danh mục",
       });
     }
   },
-  async deletecategoryAsync(req, res) {
-    const categoryId = req.params.id;
+
+  // =====================================================
+  // CREATE CATEGORY
+  // POST /api/categorys
+  // =====================================================
+  async createCategory(req, res) {
     try {
-      const category = await Category.findById(categoryId);
-      await category.remove();
+      const { name, type, description, image } = req.body;
 
-      res.status(200).send({ message: "category removed" });
-    } catch (err) {
-      res.send({ message: err.message });
-    }
-  },
-  async deleteAll(req, res) {
-    try {
-      await Category.remove();
-      res.status(200).send({ message: "category removed" });
-    } catch (err) {
-      res.send({ message: err.message });
-    }
-  },
+      if (!name || !String(name).trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "Tên danh mục không được để trống",
+        });
+      }
 
-  async getMencategory(req, res) {
-    const searchArr = req.query.searchArr;
-    const sortArr = req.query.sortArr;
-    const pageSize = 4;
-    const page = Number(req.query.pageNumber) || 1;
+      const category = new Category({
+        name: String(name).trim(),
 
-    try {
-      const count = await category.countDocuments({ $and: searchArr });
-      const mencategory = await category
-        .find({
-          $and: searchArr,
-        })
-        .sort(sortArr)
-        .limit(pageSize)
-        .skip(pageSize * (page - 1));
+        type: type !== undefined && type !== null ? String(type) : "",
 
-      res.status(200).send({
-        mencategory,
-        page,
-        pages: Math.ceil(count / pageSize),
+        description: description || "",
+
+        image: image || "",
+
+        created_at: new Date(),
+
+        updated_at: new Date(),
+      });
+
+      await category.save();
+
+      return res.status(201).json({
+        success: true,
+        message: "Thêm danh mục thành công",
+        category,
       });
     } catch (error) {
-      res.status(404).send({ message: error.message });
+      console.error("createCategory error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Không thể thêm danh mục",
+      });
     }
   },
-  async getWomencategory(req, res) {
-    const searchArr = req.query.searchArr;
-    console.log(searchArr);
-    const sortArr = req.query.sortArr;
-    const pageSize = 4;
-    const page = Number(req.query.pageNumber) || 1;
 
+  // =====================================================
+  // UPDATE CATEGORY
+  // PATCH /api/categorys/:id
+  // =====================================================
+  async updateCategory(req, res) {
     try {
-      const count = await category.countDocuments({ $and: searchArr });
+      const { id } = req.params;
 
-      const womencategorys = await category
-        .find({
-          $and: searchArr,
-        })
-        .sort(sortArr)
-        .limit(pageSize)
-        .skip(pageSize * (page - 1));
+      const category = await Category.findById(id);
 
-      res.status(200).send({
-        womencategorys,
-        page,
-        pages: Math.ceil(count / pageSize),
+      if (!category) {
+        return res.status(404).json({
+          success: false,
+          message: "Không tìm thấy danh mục",
+        });
+      }
+
+      if (req.body.name !== undefined) {
+        category.name = String(req.body.name).trim();
+      }
+
+      if (req.body.type !== undefined) {
+        category.type = String(req.body.type);
+      }
+
+      if (req.body.description !== undefined) {
+        category.description = req.body.description;
+      }
+
+      if (req.body.image !== undefined) {
+        category.image = req.body.image;
+      }
+
+      category.updated_at = new Date();
+
+      await category.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Cập nhật danh mục thành công",
+        category,
       });
     } catch (error) {
-      res.status(404).send({ message: error.message });
+      console.error("updateCategory error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Không thể cập nhật danh mục",
+      });
     }
   },
 
-  async getKidscategory(req, res) {
-    const searchArr = req.query.searchArr;
-    const sortArr = req.query.sortArr;
-    const pageSize = 4;
-    const page = Number(req.query.pageNumber) || 1;
+  // =====================================================
+  // DELETE CATEGORY
+  // DELETE /api/categorys/:id
+  // =====================================================
+  async deleteCategory(req, res) {
     try {
-      const count = await category.countDocuments({ $and: searchArr });
-      const kidscategorys = await category
-        .find({
-          $and: searchArr,
-        })
-        .sort(sortArr)
-        .limit(pageSize)
-        .skip(pageSize * (page - 1));
+      const { id } = req.params;
 
-      res.status(200).send({
-        kidscategorys,
-        page,
-        pages: Math.ceil(count / pageSize),
+      const category = await Category.findByIdAndDelete(id);
+
+      if (!category) {
+        return res.status(404).json({
+          success: false,
+          message: "Không tìm thấy danh mục",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Xóa danh mục thành công",
       });
     } catch (error) {
-      res.status(404).send({ message: error.message });
-    }
-  },
-  async getNewArrivalscategory(req, res) {
-    try {
-      const newArrivals = await category
-        .find({})
-        .sort({ createdAt: -1 })
-        .limit(3);
-      res.status(200).send(newArrivals);
-    } catch (error) {
-      res.status(404).send({ message: error.message });
-    }
-  },
+      console.error("deleteCategory error:", error);
 
-  async getDiscountedcategory(req, res) {
-    const searchArr = req.query.searchArr;
-    const sortArr = req.query.sortArr;
-    const pageSize = 4;
-    const page = Number(req.query.pageNumber) || 1;
-    try {
-      const count = await category.countDocuments({ $and: searchArr });
-      const discountedcategory = await category
-        .find({ $and: searchArr })
-        .sort(sortArr)
-        .limit(pageSize)
-        .skip(pageSize * (page - 1));
-      res.status(200).send({
-        discountedcategory,
-        page,
-        pages: Math.ceil(count / pageSize),
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Không thể xóa danh mục",
       });
-    } catch (error) {
-      res.status(404).send({ message: error.message });
-    }
-  },
-  async getcategorysYouMayLike(req, res) {
-    const searchArr = req.query.searchArr;
-    try {
-      const categorys = await category
-        .find({ $and: searchArr })
-        .sort({ createdAt: -1 })
-        .limit(8);
-
-      res.status(200).send(categorys);
-    } catch (error) {
-      res.status(404).send({ message: error.message });
     }
   },
 };

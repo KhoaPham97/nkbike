@@ -1,38 +1,46 @@
 const mongoose = require("mongoose");
-var Schema = mongoose.Schema;
-var ObjectIdSchema = Schema.ObjectId;
-var ObjectId = mongoose.Types.ObjectId;
-const categorySchema = mongoose.Schema(
+
+const categorySchema = new mongoose.Schema(
   {
-    _id: {
-      type: ObjectIdSchema,
-      default: function () {
-        return new ObjectId();
-      },
-    },
-    id: {
-      type: Number,
-    },
     name: {
       type: String,
+      required: true,
+      trim: true,
     },
+
+    type: {
+      type: String,
+      default: "",
+    },
+
+    description: {
+      type: String,
+      default: "",
+    },
+
     image: {
       type: String,
-      image: Buffer,
+      default: "",
     },
+
     created_at: {
       type: Date,
       default: Date.now,
     },
+
     updated_at: {
       type: Date,
       default: Date.now,
     },
   },
   {
-    versionKey: false,
-  }
+    collection: "categories",
+  },
 );
 
-const Category = mongoose.model("categories", categorySchema);
-module.exports = { categorySchema, Category };
+const Category =
+  mongoose.models.Category || mongoose.model("Category", categorySchema);
+
+module.exports = {
+  Category,
+};

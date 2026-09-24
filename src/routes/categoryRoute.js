@@ -1,37 +1,26 @@
 const express = require("express");
 
-// category Controller
-const categoryController = require("../controllers/categoryController");
-
-// Auth Middleware
-const auth = require("../middlewares/auth");
-
-// Admin Access Middleware
-const adminAuth = require("../middlewares/adminAuth");
-
-// Upload image middleware
-const {
-  uploadImageMiddleware,
-  uploadImageBase64,
-  editMiddleware,
-} = require("../middlewares/uploadImage");
-
-// Search category Query Middleware
-
 const router = express.Router();
 
-// Public access
-router.get("/api/categorys", categoryController.listAllCategorysAsync);
-// router.get("/api/category/:id", categoryController.getcategoryAsync);
+const categoryController = require("../controllers/categoryController");
 
-// Admin access only
-router.post(
-  "/api/category",
-  //   uploadImageBase64,
-  categoryController.createcategoryAsync
-);
-router.patch("/api/category/", categoryController.updateCategoryAsync);
+// =====================================================
+// CATEGORY ROUTES
+// =====================================================
 
-router.delete("/api/category/all", categoryController.deleteAll);
+// GET tất cả category
+router.get("/categorys", categoryController.getCategories);
+
+// GET category theo ID
+router.get("/categorys/:id", categoryController.getCategoryById);
+
+// POST tạo category
+router.post("/categorys", categoryController.createCategory);
+
+// PATCH cập nhật category
+router.patch("/categorys/:id", categoryController.updateCategory);
+
+// DELETE category
+router.delete("/categorys/:id", categoryController.deleteCategory);
 
 module.exports = router;
