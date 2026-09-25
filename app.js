@@ -25,6 +25,7 @@ const cartRoute = require("./src/routes/cartRoute");
 const categoryRoute = require("./src/routes/categoryRoute");
 const customerRouter = require("./src/routes/customerRoute");
 const inventoryRouter = require("./src/routes/inventoryRouter");
+const analyticsRoutes = require("./src/routes/analyticsRoutes");
 
 app.use(cors());
 
@@ -42,4 +43,5 @@ app.use(paypalCheckoutRoute);
 app.use("/api/order", orderRoute);
 app.use("/api/customers", customerRouter);
 app.use("/api/products/inventory", inventoryRouter);
+app.use("/api/analytics", analyticsRoutes);
 module.exports = app;
