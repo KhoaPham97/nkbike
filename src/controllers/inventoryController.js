@@ -1,7 +1,7 @@
 const mongoose = require("mongoose");
 
 const { Product } = require("../models/products");
-const InventoryReceipt = require("../models/inventoryReceipt");
+const InventoryReceipt = require("../models/InventoryReceipt");
 const InventoryHistory = require("../models/inventoryHistory");
 
 // =====================================================
