@@ -3,7 +3,14 @@ const mongoose = require("mongoose");
 const Order = require("../models/orders");
 const Customer = require("../models/customer");
 const { Product } = require("../models/products");
-const { InventoryHistory } = require("../models/inventoryHistory");
+
+// =========================================================
+// QUAN TRỌNG
+// inventoryHistory.js export trực tiếp model
+// Không dùng { InventoryHistory }
+// =========================================================
+const InventoryHistory = require("../models/inventoryHistory");
+
 /* =========================================================
    CONSTANT
 ========================================================= */
@@ -24,12 +31,18 @@ const ALLOWED_PAYMENT_METHODS = ["cash", "transfer", "cod", "debt"];
    HELPER
 ========================================================= */
 
+/**
+ * Chuyển giá trị sang number an toàn
+ */
 const toNumber = (value) => {
   const number = Number(value);
 
   return Number.isFinite(number) ? number : 0;
 };
 
+/**
+ * Lấy mã sản phẩm
+ */
 const getProductCode = (product) => {
   return (
     product?.code ||
@@ -39,6 +52,37 @@ const getProductCode = (product) => {
     ""
   );
 };
+
+/**
+ * Lấy variants an toàn
+ */
+const getVariants = (product) => {
+  return Array.isArray(product?.variants) ? product.variants : [];
+};
+
+/**
+ * Tìm variant
+ */
+const findVariant = (product, variantName = "") => {
+  const cleanName = String(variantName || "").trim();
+
+  if (!cleanName) {
+    return null;
+  }
+
+  const variants = getVariants(product);
+
+  return (
+    variants.find((item) => String(item?.name || "").trim() === cleanName) ||
+    null
+  );
+};
+
+/* =========================================================
+   SYNC ORDER STOCK
+   DÙNG CHO ĐƠN CŨ CHƯA TRỪ KHO
+========================================================= */
+
 const syncOrderStockAsync = async (req, res) => {
   const session = await mongoose.startSession();
 
@@ -50,13 +94,15 @@ const syncOrderStockAsync = async (req, res) => {
         $ne: true,
       },
 
-      // Không đồng bộ đơn đã hủy
       status: {
         $ne: "cancelled",
       },
     };
 
-    // Nếu FE truyền orderId thì chỉ đồng bộ đơn đó
+    /* =====================================================
+       NẾU CÓ ORDER ID
+    ===================================================== */
+
     if (orderId) {
       if (!mongoose.Types.ObjectId.isValid(orderId)) {
         return res.status(400).json({
@@ -85,13 +131,16 @@ const syncOrderStockAsync = async (req, res) => {
 
       result.totalOrders = orders.length;
 
+      /* ===============================================
+           LOOP ORDERS
+        =============================================== */
+
       for (const order of orders) {
-        // =====================================================
-        // KIỂM TRA ĐƠN KHÔNG CÓ SẢN PHẨM
-        // =====================================================
+        /* =============================================
+             KHÔNG CÓ ITEM
+          ============================================= */
+
         if (!Array.isArray(order.items) || order.items.length === 0) {
-          // Chỉ đánh dấu đã kiểm tra tồn kho
-          // KHÔNG thay đổi trạng thái đơn
           order.stockDeducted = true;
           order.updated_at = new Date();
 
@@ -104,13 +153,13 @@ const syncOrderStockAsync = async (req, res) => {
           continue;
         }
 
-        // Cache product để tránh query Mongo nhiều lần
         const productCache = new Map();
 
-        // =====================================================
-        // PASS 1
-        // KIỂM TRA TOÀN BỘ TỒN KHO TRƯỚC
-        // =====================================================
+        /* =============================================
+             PASS 1
+             KIỂM TRA TOÀN BỘ TỒN
+          ============================================= */
+
         for (const item of order.items) {
           if (!item?.productId) {
             throw new Error(
@@ -127,7 +176,9 @@ const syncOrderStockAsync = async (req, res) => {
 
             if (!product) {
               throw new Error(
-                `Không tìm thấy sản phẩm ${item.productId} trong đơn ${order.code || order._id}`,
+                `Không tìm thấy sản phẩm ${item.productId} trong đơn ${
+                  order.code || order._id
+                }`,
               );
             }
 
@@ -144,13 +195,12 @@ const syncOrderStockAsync = async (req, res) => {
 
           const variantName = String(item.variantName || "").trim();
 
-          // ===================================================
-          // CÓ VARIANT
-          // ===================================================
+          /* =========================================
+               CÓ VARIANT
+            ========================================= */
+
           if (variantName) {
-            const variant = product.variants?.find(
-              (v) => String(v?.name || "").trim() === variantName,
-            );
+            const variant = findVariant(product, variantName);
 
             if (!variant) {
               throw new Error(
@@ -165,12 +215,10 @@ const syncOrderStockAsync = async (req, res) => {
                 `Sản phẩm "${product.title}" - "${variantName}" chỉ còn ${stock}, cần ${qty}`,
               );
             }
-          }
-
-          // ===================================================
-          // KHÔNG CÓ VARIANT
-          // ===================================================
-          else {
+          } else {
+            /* =========================================
+               KHÔNG VARIANT
+            ========================================= */
             const stock = toNumber(product.qty);
 
             if (stock < qty) {
@@ -181,10 +229,11 @@ const syncOrderStockAsync = async (req, res) => {
           }
         }
 
-        // =====================================================
-        // PASS 2
-        // TRỪ TỒN + GHI LỊCH SỬ
-        // =====================================================
+        /* =============================================
+             PASS 2
+             TRỪ KHO + HISTORY
+          ============================================= */
+
         for (const item of order.items) {
           const product = productCache.get(String(item.productId));
 
@@ -196,13 +245,12 @@ const syncOrderStockAsync = async (req, res) => {
 
           const variantName = String(item.variantName || "").trim();
 
-          // ===================================================
-          // CÓ VARIANT
-          // ===================================================
+          /* =========================================
+               CÓ VARIANT
+            ========================================= */
+
           if (variantName) {
-            const variant = product.variants?.find(
-              (v) => String(v?.name || "").trim() === variantName,
-            );
+            const variant = findVariant(product, variantName);
 
             if (!variant) {
               throw new Error(
@@ -214,15 +262,8 @@ const syncOrderStockAsync = async (req, res) => {
 
             const afterVariantQty = beforeVariantQty - qty;
 
-            // -----------------------------------------------
-            // Trừ tồn variant
-            // -----------------------------------------------
             variant.qty = afterVariantQty;
 
-            // -----------------------------------------------
-            // Trừ tồn tổng sản phẩm
-            // Giữ nguyên logic createOrderAsync hiện tại
-            // -----------------------------------------------
             const beforeProductQty = toNumber(product.qty);
 
             const afterProductQty = Math.max(0, beforeProductQty - qty);
@@ -235,9 +276,6 @@ const syncOrderStockAsync = async (req, res) => {
               session,
             });
 
-            // -----------------------------------------------
-            // Lưu lịch sử kho
-            // -----------------------------------------------
             await InventoryHistory.create(
               [
                 {
@@ -257,10 +295,8 @@ const syncOrderStockAsync = async (req, res) => {
 
                   variantName,
 
-                  // Xuất kho = số âm
                   qty: -qty,
 
-                  // Tồn của variant
                   beforeQty: beforeVariantQty,
 
                   afterQty: afterVariantQty,
@@ -268,6 +304,12 @@ const syncOrderStockAsync = async (req, res) => {
                   note: `Xuất kho theo đơn hàng ${order.code || order._id}`,
 
                   createdBy: req.user?._id || null,
+
+                  rollback: false,
+
+                  rollback_at: null,
+
+                  rollbackBy: null,
 
                   created_at: new Date(),
                 },
@@ -279,12 +321,10 @@ const syncOrderStockAsync = async (req, res) => {
 
             result.updatedItems++;
             result.historyRecords++;
-          }
-
-          // ===================================================
-          // KHÔNG CÓ VARIANT
-          // ===================================================
-          else {
+          } else {
+            /* =========================================
+               KHÔNG VARIANT
+            ========================================= */
             const beforeQty = toNumber(product.qty);
 
             const afterQty = Math.max(0, beforeQty - qty);
@@ -297,9 +337,6 @@ const syncOrderStockAsync = async (req, res) => {
               session,
             });
 
-            // -----------------------------------------------
-            // Lưu lịch sử kho
-            // -----------------------------------------------
             await InventoryHistory.create(
               [
                 {
@@ -319,7 +356,6 @@ const syncOrderStockAsync = async (req, res) => {
 
                   variantName: "",
 
-                  // Xuất kho = số âm
                   qty: -qty,
 
                   beforeQty,
@@ -329,6 +365,12 @@ const syncOrderStockAsync = async (req, res) => {
                   note: `Xuất kho theo đơn hàng ${order.code || order._id}`,
 
                   createdBy: req.user?._id || null,
+
+                  rollback: false,
+
+                  rollback_at: null,
+
+                  rollbackBy: null,
 
                   created_at: new Date(),
                 },
@@ -343,12 +385,12 @@ const syncOrderStockAsync = async (req, res) => {
           }
         }
 
-        // =====================================================
-        // ĐÁNH DẤU ĐÃ ĐỒNG BỘ TỒN KHO
-        //
-        // QUAN TRỌNG:
-        // KHÔNG thay đổi status của order
-        // =====================================================
+        /* =============================================
+             ĐÁNH DẤU ĐÃ TRỪ KHO
+             
+             KHÔNG ĐỔI STATUS
+          ============================================= */
+
         order.stockDeducted = true;
 
         order.updated_at = new Date();
@@ -388,11 +430,20 @@ const syncOrderStockAsync = async (req, res) => {
     await session.endSession();
   }
 };
+
+/* =========================================================
+   ROLLBACK ORDER STOCK
+========================================================= */
+
 const rollbackOrderStockAsync = async (req, res) => {
   const session = await mongoose.startSession();
 
   try {
     const { orderId } = req.body || {};
+
+    /* =====================================================
+       VALIDATE
+    ===================================================== */
 
     if (!orderId) {
       return res.status(400).json({
@@ -408,12 +459,16 @@ const rollbackOrderStockAsync = async (req, res) => {
       });
     }
 
-    let result = {
+    const result = {
       historyRecords: 0,
       restoredItems: 0,
     };
 
     await session.withTransaction(async () => {
+      /* ===============================================
+           1. TÌM ORDER
+        =============================================== */
+
       const order = await Order.findById(orderId).session(session);
 
       if (!order) {
@@ -421,73 +476,133 @@ const rollbackOrderStockAsync = async (req, res) => {
       }
 
       if (order.stockDeducted !== true) {
-        throw new Error("Đơn hàng này chưa được đồng bộ tồn kho");
+        throw new Error("Đơn hàng này chưa được trừ tồn kho");
       }
+
+      /* ===============================================
+           2. TÌM HISTORY
+        =============================================== */
 
       const histories = await InventoryHistory.find({
         referenceType: "Order",
+
         referenceId: order._id,
+
         type: "order",
+
         rollback: {
           $ne: true,
         },
-      }).session(session);
+      })
+        .sort({
+          created_at: 1,
+        })
+        .session(session);
 
       if (!histories.length) {
-        throw new Error("Không tìm thấy lịch sử xuất kho để rollback");
+        throw new Error(
+          `Không tìm thấy lịch sử xuất kho của đơn ${order.code || order._id}`,
+        );
       }
 
+      /* ===============================================
+           3. CACHE PRODUCT
+        =============================================== */
+
+      const productCache = new Map();
+
+      /* ===============================================
+           4. ROLLBACK HISTORY
+        =============================================== */
+
       for (const history of histories) {
-        const product = await Product.findById(history.productId).session(
-          session,
-        );
+        const productId = String(history.productId);
+
+        let product = productCache.get(productId);
 
         if (!product) {
-          throw new Error(`Không tìm thấy sản phẩm ${history.productId}`);
+          product = await Product.findById(history.productId).session(session);
+
+          if (!product) {
+            throw new Error(`Không tìm thấy sản phẩm ${history.productId}`);
+          }
+
+          productCache.set(productId, product);
         }
 
-        const restoreQty = Math.abs(Number(history.qty || 0));
+        /* =============================================
+             HISTORY QTY
+          ============================================= */
 
-        if (restoreQty <= 0) {
+        const historyQty = Number(history.qty || 0);
+
+        const restoreQty = Math.abs(historyQty);
+
+        if (!Number.isFinite(restoreQty) || restoreQty <= 0) {
           continue;
         }
 
-        // ==========================================
-        // CÓ VARIANT
-        // ==========================================
-        if (history.variantName) {
-          const variant = product.variants?.find(
-            (item) =>
-              String(item?.name || "").trim() ===
-              String(history.variantName).trim(),
-          );
+        const variantName = String(history.variantName || "").trim();
+
+        /* =============================================
+             CÓ VARIANT
+          ============================================= */
+
+        if (variantName) {
+          const variant = findVariant(product, variantName);
 
           if (!variant) {
-            throw new Error(`Không tìm thấy variant "${history.variantName}"`);
+            throw new Error(
+              `Không tìm thấy variant "${variantName}" của sản phẩm "${product.title}"`,
+            );
           }
 
-          variant.qty = Number(variant.qty || 0) + restoreQty;
+          const beforeVariantQty = toNumber(variant.qty);
 
-          // Tồn tổng sản phẩm
-          product.qty = Number(product.qty || 0) + restoreQty;
+          const afterVariantQty = beforeVariantQty + restoreQty;
+
+          variant.qty = afterVariantQty;
+
+          /* -------------------------------------------
+               TĂNG TỒN TỔNG
+            ------------------------------------------- */
+
+          const beforeProductQty = toNumber(product.qty);
+
+          const afterProductQty = beforeProductQty + restoreQty;
+
+          product.qty = afterProductQty;
+
+          product.updated_at = new Date();
+
+          await product.save({
+            session,
+          });
+        } else {
+          /* =============================================
+             KHÔNG VARIANT
+          ============================================= */
+          const beforeQty = toNumber(product.qty);
+
+          const afterQty = beforeQty + restoreQty;
+
+          product.qty = afterQty;
+
+          product.updated_at = new Date();
+
+          await product.save({
+            session,
+          });
         }
 
-        // ==========================================
-        // KHÔNG CÓ VARIANT
-        // ==========================================
-        else {
-          product.qty = Number(product.qty || 0) + restoreQty;
-        }
+        /* =============================================
+             ĐÁNH DẤU HISTORY ROLLBACK
+          ============================================= */
 
-        product.updated_at = new Date();
-
-        await product.save({
-          session,
-        });
-
-        // Đánh dấu history đã rollback
         history.rollback = true;
+
         history.rollback_at = new Date();
+
         history.rollbackBy = req.user?._id || null;
 
         await history.save({
@@ -495,11 +610,18 @@ const rollbackOrderStockAsync = async (req, res) => {
         });
 
         result.historyRecords++;
+
         result.restoredItems++;
       }
 
-      // Đơn không còn được đánh dấu đã trừ kho
+      /* ===============================================
+           5. ĐÁNH DẤU ORDER KHÔNG CÒN TRỪ KHO
+           
+           KHÔNG ĐỔI STATUS
+        =============================================== */
+
       order.stockDeducted = false;
+
       order.updated_at = new Date();
 
       await order.save({
@@ -509,20 +631,26 @@ const rollbackOrderStockAsync = async (req, res) => {
 
     return res.status(200).json({
       success: true,
+
       message: "Rollback tồn kho thành công",
-      ...result,
+
+      historyRecords: result.historyRecords,
+
+      restoredItems: result.restoredItems,
     });
   } catch (error) {
     console.error("rollbackOrderStockAsync:", error);
 
     return res.status(400).json({
       success: false,
+
       message: error?.message || "Không thể rollback tồn kho",
     });
   } finally {
     await session.endSession();
   }
 };
+
 /* =========================================================
    GET PRODUCT PRICE
 ========================================================= */
@@ -530,16 +658,23 @@ const rollbackOrderStockAsync = async (req, res) => {
 const getProductPrice = (product, variantName = "") => {
   const name = String(variantName || "").trim();
 
+  /* =====================================================
+     KHÔNG CÓ VARIANT
+  ===================================================== */
+
   if (!name) {
     return {
       price: toNumber(product?.price),
+
       variant: null,
     };
   }
 
-  const variant = product?.variants?.find(
-    (item) => String(item?.name || "").trim() === name,
-  );
+  /* =====================================================
+     CÓ VARIANT
+  ===================================================== */
+
+  const variant = findVariant(product, name);
 
   if (!variant) {
     return {
@@ -550,6 +685,7 @@ const getProductPrice = (product, variantName = "") => {
 
   return {
     price: toNumber(variant.price),
+
     variant,
   };
 };
@@ -595,38 +731,17 @@ const calculateOrderTotal = (order) => {
 
   return {
     subtotal,
+
     totalAmount,
+
     debt,
   };
 };
 
 /* =========================================================
    SYNC ONE PRODUCT PRICE
-   TO UNCOMPLETED ORDERS
 ========================================================= */
 
-/**
- * Khi Product hoặc Variant thay đổi giá,
- * gọi hàm này để cập nhật các đơn:
- *
- * pending
- * confirmed
- * shipping
- *
- * Không cập nhật:
- *
- * completed
- * cancelled
- *
- * productId:
- * ID sản phẩm
- *
- * variantName:
- * tên variant, nếu sản phẩm có variant
- *
- * newPrice:
- * giá mới
- */
 const syncProductPriceToOrders = async ({
   productId,
   variantName = "",
@@ -644,6 +759,7 @@ const syncProductPriceToOrders = async ({
     status: {
       $in: UNCOMPLETED_STATUSES,
     },
+
     "items.productId": productId,
   });
 
@@ -660,9 +776,10 @@ const syncProductPriceToOrders = async ({
 
         const itemVariantName = String(item.variantName || "").trim();
 
-        /*
-         * Sản phẩm không có variant
-         */
+        /* =============================================
+             KHÔNG VARIANT
+          ============================================= */
+
         if (!cleanVariantName && !itemVariantName) {
           item.price = price;
 
@@ -673,9 +790,10 @@ const syncProductPriceToOrders = async ({
           continue;
         }
 
-        /*
-         * Sản phẩm có variant
-         */
+        /* =============================================
+             CÓ VARIANT
+          ============================================= */
+
         if (cleanVariantName && itemVariantName === cleanVariantName) {
           item.price = price;
 
@@ -704,13 +822,6 @@ const syncProductPriceToOrders = async ({
    SYNC ALL PRODUCT VARIANT PRICES
 ========================================================= */
 
-/**
- * Đồng bộ toàn bộ giá hiện tại của Product
- * vào các đơn chưa hoàn thành.
- *
- * Dùng trong trường hợp muốn chạy thủ công
- * hoặc đồng bộ lại toàn bộ dữ liệu.
- */
 const syncAllUncompletedOrderPricesAsync = async (req, res) => {
   try {
     const orders = await Order.find({
@@ -762,12 +873,10 @@ const syncAllUncompletedOrderPricesAsync = async (req, res) => {
           updatedItems++;
         }
 
-        /*
-         * Cập nhật thêm thông tin snapshot
-         * nếu sản phẩm đã thay đổi tên/mã.
-         *
-         * Không bắt buộc nhưng hữu ích.
-         */
+        /* =============================================
+             SNAPSHOT PRODUCT
+          ============================================= */
+
         if (product.title) {
           item.productTitle = product.title;
         }
@@ -778,9 +887,6 @@ const syncAllUncompletedOrderPricesAsync = async (req, res) => {
           item.productCode = productCode;
         }
 
-        /*
-         * Nếu variant tồn tại thì giữ variantName
-         */
         if (variant) {
           item.variantName = String(variant.name || "").trim();
         }
@@ -812,14 +918,13 @@ const syncAllUncompletedOrderPricesAsync = async (req, res) => {
     return res.status(500).json({
       success: false,
 
-      message: "Không thể đồng bộ giá đơn hàng",
+      message: error?.message || "Không thể đồng bộ giá đơn hàng",
     });
   }
 };
 
 /* =========================================================
    GENERATE ORDER CODE
-   DH20260923-0001
 ========================================================= */
 
 const generateOrderCode = async () => {
@@ -856,6 +961,7 @@ const generateOrderCode = async () => {
 
 /* =========================================================
    CREATE ORDER
+   TẠO ĐƠN = TỰ ĐỘNG TRỪ KHO + HISTORY
 ========================================================= */
 
 const createOrderAsync = async (req, res) => {
@@ -870,7 +976,7 @@ const createOrderAsync = async (req, res) => {
       paidAmount = 0,
       paymentMethod = "cash",
       note = "",
-    } = req.body;
+    } = req.body || {};
 
     /* =====================================================
        VALIDATE ITEMS
@@ -907,7 +1013,7 @@ const createOrderAsync = async (req, res) => {
     const paidNumber = Math.max(0, toNumber(paidAmount));
 
     /* =====================================================
-       PAYMENT METHOD
+       PAYMENT
     ===================================================== */
 
     if (!ALLOWED_PAYMENT_METHODS.includes(paymentMethod)) {
@@ -921,9 +1027,9 @@ const createOrderAsync = async (req, res) => {
     let createdOrder = null;
 
     await session.withTransaction(async () => {
-      /* ================================================
+      /* =================================================
            CUSTOMER
-        ================================================ */
+        ================================================= */
 
       let customer = null;
 
@@ -935,15 +1041,15 @@ const createOrderAsync = async (req, res) => {
         }
       }
 
-      /* ================================================
-           MERGE SAME PRODUCT + VARIANT
-        ================================================ */
+      /* =================================================
+           MERGE PRODUCT + VARIANT
+        ================================================= */
 
       const mergedItems = {};
 
       for (const item of items) {
         if (
-          !item.productId ||
+          !item?.productId ||
           !mongoose.Types.ObjectId.isValid(item.productId)
         ) {
           throw new Error("productId không hợp lệ");
@@ -972,78 +1078,203 @@ const createOrderAsync = async (req, res) => {
         mergedItems[key].qty += qty;
       }
 
-      /* ================================================
+      /* =================================================
            PROCESS PRODUCTS
-        ================================================ */
+        ================================================= */
 
       const orderItems = [];
+
+      const inventoryHistories = [];
+
+      const productCache = new Map();
 
       let subtotal = 0;
 
       for (const item of Object.values(mergedItems)) {
-        const product = await Product.findById(item.productId).session(session);
+        /* ===============================================
+             GET PRODUCT
+          =============================================== */
+
+        let product = productCache.get(String(item.productId));
 
         if (!product) {
-          throw new Error(`Không tìm thấy sản phẩm ${item.productId}`);
+          product = await Product.findById(item.productId).session(session);
+
+          if (!product) {
+            throw new Error(`Không tìm thấy sản phẩm ${item.productId}`);
+          }
+
+          productCache.set(String(item.productId), product);
         }
+
+        /* ===============================================
+             PRICE
+          =============================================== */
 
         let price = toNumber(product.price);
 
-        let stock = toNumber(product.qty);
-
         let variant = null;
 
-        /* ==============================================
-             VARIANT
-          ============================================== */
+        const variantName = String(item.variantName || "").trim();
 
-        if (item.variantName) {
-          variant = product.variants?.find(
-            (v) => String(v.name || "").trim() === item.variantName,
-          );
+        /* ===============================================
+             VARIANT
+          =============================================== */
+
+        if (variantName) {
+          variant = findVariant(product, variantName);
 
           if (!variant) {
             throw new Error(
-              `Không tìm thấy phân loại "${item.variantName}" của sản phẩm "${product.title}"`,
+              `Không tìm thấy phân loại "${variantName}" của sản phẩm "${product.title}"`,
             );
           }
 
           price = toNumber(variant.price);
-
-          stock = toNumber(variant.qty);
         }
 
-        /* ==============================================
-             CHECK STOCK
-          ============================================== */
+        /* ===============================================
+             STOCK
+          =============================================== */
+
+        const stock = variant ? toNumber(variant.qty) : toNumber(product.qty);
 
         if (stock < item.qty) {
           throw new Error(
-            `Sản phẩm "${product.title}" ${
-              item.variantName ? `- ${item.variantName} ` : ""
-            }chỉ còn ${stock}`,
+            `Sản phẩm "${product.title}"${
+              variantName ? ` - ${variantName}` : ""
+            } chỉ còn ${stock}, cần ${item.qty}`,
           );
         }
 
-        /* ==============================================
-             TOTAL
-          ============================================== */
+        /* ===============================================
+             TOTAL ITEM
+          =============================================== */
 
         const itemTotal = price * item.qty;
 
         subtotal += itemTotal;
 
-        /* ==============================================
-             STOCK
-          ============================================== */
+        /* ===============================================
+             BEFORE STOCK
+          =============================================== */
+
+        const beforeProductQty = toNumber(product.qty);
+
+        /* =================================================
+             CÓ VARIANT
+          ================================================= */
 
         if (variant) {
-          variant.qty = toNumber(variant.qty) - item.qty;
+          const beforeVariantQty = toNumber(variant.qty);
 
-          product.qty = Math.max(0, toNumber(product.qty) - item.qty);
+          const afterVariantQty = beforeVariantQty - item.qty;
+
+          const afterProductQty = Math.max(0, beforeProductQty - item.qty);
+
+          /* -----------------------------------------------
+               TRỪ VARIANT
+            ----------------------------------------------- */
+
+          variant.qty = afterVariantQty;
+
+          /* -----------------------------------------------
+               TRỪ TỔNG PRODUCT
+            ----------------------------------------------- */
+
+          product.qty = afterProductQty;
+
+          /* -----------------------------------------------
+               HISTORY
+            ----------------------------------------------- */
+
+          inventoryHistories.push({
+            type: "order",
+
+            referenceType: "Order",
+
+            referenceId: null,
+
+            referenceCode: "",
+
+            productId: product._id,
+
+            productTitle: product.title || "",
+
+            productCode: getProductCode(product),
+
+            variantName,
+
+            qty: -Math.abs(item.qty),
+
+            beforeQty: beforeVariantQty,
+
+            afterQty: afterVariantQty,
+
+            note: "",
+
+            createdBy: req.user?._id || null,
+
+            rollback: false,
+
+            rollback_at: null,
+
+            rollbackBy: null,
+
+            created_at: new Date(),
+          });
         } else {
-          product.qty = Math.max(0, toNumber(product.qty) - item.qty);
+          /* =================================================
+             KHÔNG CÓ VARIANT
+          ================================================= */
+          const afterProductQty = Math.max(0, beforeProductQty - item.qty);
+
+          product.qty = afterProductQty;
+
+          /* -----------------------------------------------
+               HISTORY
+            ----------------------------------------------- */
+
+          inventoryHistories.push({
+            type: "order",
+
+            referenceType: "Order",
+
+            referenceId: null,
+
+            referenceCode: "",
+
+            productId: product._id,
+
+            productTitle: product.title || "",
+
+            productCode: getProductCode(product),
+
+            variantName: "",
+
+            qty: -Math.abs(item.qty),
+
+            beforeQty: beforeProductQty,
+
+            afterQty: afterProductQty,
+
+            note: "",
+
+            createdBy: req.user?._id || null,
+
+            rollback: false,
+
+            rollback_at: null,
+
+            rollbackBy: null,
+
+            created_at: new Date(),
+          });
         }
+
+        /* ===============================================
+             SAVE PRODUCT
+          =============================================== */
 
         product.updated_at = new Date();
 
@@ -1051,9 +1282,9 @@ const createOrderAsync = async (req, res) => {
           session,
         });
 
-        /* ==============================================
-             ORDER ITEM SNAPSHOT
-          ============================================== */
+        /* ===============================================
+             ORDER ITEM
+          =============================================== */
 
         orderItems.push({
           productId: product._id,
@@ -1062,7 +1293,7 @@ const createOrderAsync = async (req, res) => {
 
           productCode: getProductCode(product),
 
-          variantName: item.variantName,
+          variantName,
 
           price,
 
@@ -1074,9 +1305,9 @@ const createOrderAsync = async (req, res) => {
         });
       }
 
-      /* ================================================
+      /* =================================================
            TOTAL
-        ================================================ */
+        ================================================= */
 
       const totalAmount = Math.max(
         0,
@@ -1089,15 +1320,15 @@ const createOrderAsync = async (req, res) => {
 
       const debt = Math.max(0, totalAmount - paidNumber);
 
-      /* ================================================
+      /* =================================================
            ORDER CODE
-        ================================================ */
+        ================================================= */
 
       const code = await generateOrderCode();
 
-      /* ================================================
+      /* =================================================
            CREATE ORDER
-        ================================================ */
+        ================================================= */
 
       const order = new Order({
         code,
@@ -1128,6 +1359,12 @@ const createOrderAsync = async (req, res) => {
 
         status: "pending",
 
+        /*
+         * QUAN TRỌNG:
+         * Tạo đơn đã trừ kho
+         */
+        stockDeducted: true,
+
         note: String(note || "").trim(),
 
         created_at: new Date(),
@@ -1139,9 +1376,33 @@ const createOrderAsync = async (req, res) => {
         session,
       });
 
-      /* ================================================
+      /* =================================================
+           UPDATE INVENTORY HISTORY
+        ================================================= */
+
+      for (const history of inventoryHistories) {
+        history.referenceId = order._id;
+
+        history.referenceCode = order.code;
+
+        history.note = `Xuất kho theo đơn hàng ${order.code}`;
+      }
+
+      /* =================================================
+           INSERT HISTORY
+        ================================================= */
+
+      if (inventoryHistories.length > 0) {
+        await InventoryHistory.insertMany(inventoryHistories, {
+          session,
+
+          ordered: true,
+        });
+      }
+
+      /* =================================================
            CUSTOMER
-        ================================================ */
+        ================================================= */
 
       if (customer) {
         customer.totalOrders = toNumber(customer.totalOrders) + 1;
@@ -1160,10 +1421,14 @@ const createOrderAsync = async (req, res) => {
       createdOrder = order;
     });
 
+    /* =====================================================
+       RESPONSE
+    ===================================================== */
+
     return res.status(201).json({
       success: true,
 
-      message: "Tạo đơn hàng thành công",
+      message: "Tạo đơn hàng thành công và đã trừ tồn kho",
 
       order: createdOrder,
     });
@@ -1181,7 +1446,7 @@ const createOrderAsync = async (req, res) => {
 };
 
 /* =========================================================
-   GET ORDER
+   GET ORDER BY ID
 ========================================================= */
 
 const getOrderByIdAsync = async (req, res) => {
@@ -1249,18 +1514,23 @@ const listOrdersAsync = async (req, res) => {
         {
           code: {
             $regex: search,
+
             $options: "i",
           },
         },
+
         {
           customerName: {
             $regex: search,
+
             $options: "i",
           },
         },
+
         {
           customerPhone: {
             $regex: search,
+
             $options: "i",
           },
         },
@@ -1306,18 +1576,21 @@ const listOrdersAsync = async (req, res) => {
 };
 
 /* =========================================================
-   UPDATE STATUS
+   UPDATE ORDER STATUS
 ========================================================= */
 
 const updateOrderStatusAsync = async (req, res) => {
   try {
     const { id } = req.params;
-    console.log("id", id);
+
     const { status: newStatus } = req.body;
+
+    console.log("update order status:", id, newStatus);
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
         success: false,
+
         message: "ID đơn hàng không hợp lệ",
       });
     }
@@ -1325,6 +1598,7 @@ const updateOrderStatusAsync = async (req, res) => {
     if (!ALLOWED_STATUSES.includes(newStatus)) {
       return res.status(400).json({
         success: false,
+
         message: "Trạng thái đơn hàng không hợp lệ",
       });
     }
@@ -1334,14 +1608,14 @@ const updateOrderStatusAsync = async (req, res) => {
     if (!order) {
       return res.status(404).json({
         success: false,
+
         message: "Không tìm thấy đơn hàng",
       });
     }
 
-    // ========================================================
-    // KHI HOÀN THÀNH ĐƠN
-    // LẤY GIÁ BÁN HIỆN TẠI LÀM GIÁ THANH TOÁN
-    // ========================================================
+    /* ===================================================
+         HOÀN THÀNH ĐƠN
+      =================================================== */
 
     if (newStatus === "completed" && order.status !== "completed") {
       const productCache = new Map();
@@ -1365,52 +1639,52 @@ const updateOrderStatusAsync = async (req, res) => {
           continue;
         }
 
-        // ----------------------------------------------------
-        // LẤY GIÁ BÁN HIỆN TẠI
-        // ----------------------------------------------------
+        /* ===============================================
+             LẤY GIÁ HIỆN TẠI
+          =============================================== */
 
         const { price: sellingPrice } = getProductPrice(
           product,
           item.variantName || "",
         );
 
-        // ----------------------------------------------------
-        // CHỐT GIÁ BÁN
-        // ----------------------------------------------------
+        if (sellingPrice === null) {
+          continue;
+        }
 
         item.price = sellingPrice;
 
         item.total = sellingPrice * toNumber(item.qty);
       }
 
-      // ------------------------------------------------------
-      // TÍNH LẠI TỔNG ĐƠN
-      // ------------------------------------------------------
+      /* ===============================================
+           CALCULATE TOTAL
+        =============================================== */
 
       calculateOrderTotal(order);
 
-      // ------------------------------------------------------
-      // KHI HOÀN THÀNH:
-      //
-      // SỐ TIỀN THANH TOÁN = TỔNG ĐƠN
-      // CÔNG NỢ = 0
-      // ------------------------------------------------------
-
+      /*
+       * Khi hoàn thành:
+       * thanh toán đủ
+       */
       order.paidAmount = order.totalAmount;
+
       order.debt = 0;
     }
 
-    // ========================================================
-    // CẬP NHẬT STATUS
-    // ========================================================
+    /* ===================================================
+         UPDATE STATUS
+      =================================================== */
 
     order.status = newStatus;
+
     order.updated_at = new Date();
 
     await order.save();
 
     return res.status(200).json({
       success: true,
+
       message:
         newStatus === "completed"
           ? "Đơn hàng đã hoàn thành và đã chốt giá thanh toán"
@@ -1423,28 +1697,16 @@ const updateOrderStatusAsync = async (req, res) => {
 
     return res.status(500).json({
       success: false,
+
       message: error?.message || "Không thể cập nhật trạng thái đơn hàng",
     });
   }
 };
+
 /* =========================================================
    SYNC PRODUCT PRICE API
 ========================================================= */
 
-/**
- * PATCH
- * /orders/sync-product-price
- *
- * Body:
- *
- * {
- *   "productId": "...",
- *   "variantName": "",
- *   "newPrice": 35000
- * }
- *
- * Dùng sau khi Product/Variant được cập nhật giá.
- */
 const syncProductPriceAsync = async (req, res) => {
   try {
     const { productId, variantName = "", newPrice } = req.body;
@@ -1517,6 +1779,8 @@ module.exports = {
   syncAllUncompletedOrderPricesAsync,
 
   syncProductPriceToOrders,
+
   syncOrderStockAsync,
+
   rollbackOrderStockAsync,
 };

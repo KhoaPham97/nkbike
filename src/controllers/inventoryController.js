@@ -597,9 +597,168 @@ const getInventoryReceiptDetailAsync = async (req, res) => {
     });
   }
 };
+const rebuildInventoryHistoryAsync = async (req, res) => {
+  const session = await mongoose.startSession();
 
+  try {
+    const { items = [], replace = false } = req.body || {};
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Danh sách inventory không hợp lệ",
+      });
+    }
+
+    // =====================================================
+    // VALIDATE DATA
+    // =====================================================
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+
+      if (!item.type) {
+        throw new Error(`Phần tử ${i + 1} thiếu type`);
+      }
+
+      if (
+        !["import", "export", "adjustment", "order", "cancel"].includes(
+          item.type,
+        )
+      ) {
+        throw new Error(`Phần tử ${i + 1} có type không hợp lệ: ${item.type}`);
+      }
+
+      if (!item.productId) {
+        throw new Error(`Phần tử ${i + 1} thiếu productId`);
+      }
+
+      if (!mongoose.Types.ObjectId.isValid(item.productId)) {
+        throw new Error(
+          `productId không hợp lệ tại phần tử ${i + 1}: ${item.productId}`,
+        );
+      }
+
+      if (!Number.isFinite(Number(item.qty))) {
+        throw new Error(`qty không hợp lệ tại phần tử ${i + 1}`);
+      }
+    }
+
+    let created = 0;
+    let deleted = 0;
+
+    await session.withTransaction(async () => {
+      // =====================================================
+      // REMOVE OLD HISTORY
+      // =====================================================
+
+      if (replace === true) {
+        const referenceCodes = [
+          ...new Set(
+            items
+              .map((item) => String(item.referenceCode || "").trim())
+              .filter(Boolean),
+          ),
+        ];
+
+        if (referenceCodes.length > 0) {
+          const deleteResult = await InventoryHistory.deleteMany(
+            {
+              referenceCode: {
+                $in: referenceCodes,
+              },
+            },
+            { session },
+          );
+
+          deleted = deleteResult.deletedCount || 0;
+        }
+      }
+
+      // =====================================================
+      // PREPARE DATA
+      // =====================================================
+
+      const histories = items.map((item) => ({
+        type: item.type,
+
+        referenceType:
+          item.referenceType ||
+          (item.type === "order" ? "Order" : "InventoryReceipt"),
+
+        referenceId:
+          item.referenceId && mongoose.Types.ObjectId.isValid(item.referenceId)
+            ? item.referenceId
+            : null,
+
+        referenceCode: item.referenceCode || "",
+
+        productId: item.productId,
+
+        productTitle: item.productTitle || "",
+
+        productCode: item.productCode || "",
+
+        variantName: item.variantName || "",
+
+        qty: Number(item.qty),
+
+        beforeQty: Number(item.beforeQty || 0),
+
+        afterQty: Number(item.afterQty || 0),
+
+        note: item.note || "",
+
+        createdBy:
+          item.createdBy && mongoose.Types.ObjectId.isValid(item.createdBy)
+            ? item.createdBy
+            : req.user?._id || null,
+
+        rollback: item.rollback === true,
+
+        rollback_at: item.rollback_at ? new Date(item.rollback_at) : null,
+
+        rollbackBy:
+          item.rollbackBy && mongoose.Types.ObjectId.isValid(item.rollbackBy)
+            ? item.rollbackBy
+            : null,
+
+        created_at: item.created_at ? new Date(item.created_at) : new Date(),
+      }));
+
+      // =====================================================
+      // INSERT
+      // =====================================================
+
+      const result = await InventoryHistory.insertMany(histories, {
+        session,
+        ordered: true,
+      });
+
+      created = result.length;
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Tạo lại inventory thành công",
+      deleted,
+      created,
+      total: items.length,
+    });
+  } catch (error) {
+    console.error("rebuildInventoryHistoryAsync:", error);
+
+    return res.status(400).json({
+      success: false,
+      message: error?.message || "Không thể tạo lại inventory",
+    });
+  } finally {
+    await session.endSession();
+  }
+};
 module.exports = {
   createInventoryReceiptAsync,
   listInventoryReceiptsAsync,
   getInventoryReceiptDetailAsync,
+  rebuildInventoryHistoryAsync,
 };
