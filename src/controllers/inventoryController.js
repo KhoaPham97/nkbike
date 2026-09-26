@@ -1,262 +1,449 @@
 const mongoose = require("mongoose");
 
 const { Product } = require("../models/products");
-const InventoryReceipt = require("../models/InventoryReceipt");
+const InventoryReceipt = require("../models/inventoryReceipt");
+const InventoryHistory = require("../models/inventoryHistory");
 
-// ============================================================
+// =====================================================
+// HELPER
+// =====================================================
+
+const toNumber = (value) => {
+  const number = Number(value);
+
+  return Number.isFinite(number) ? number : 0;
+};
+
+const getProductCode = (product) => {
+  return (
+    product?.code ||
+    product?.productCode ||
+    product?.sku ||
+    product?.product_code ||
+    ""
+  );
+};
+
+// =====================================================
 // TẠO MÃ PHIẾU NHẬP
-// VD: NK260923001
-// ============================================================
-const generateReceiptCode = async () => {
+// NK + YYMMDD + 3 SỐ
+// Ví dụ: NK260926001
+// =====================================================
+
+const generateReceiptCode = async (session) => {
   const now = new Date();
 
-  const year = String(now.getFullYear()).slice(-2);
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
+  const yy = String(now.getFullYear()).slice(-2);
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
 
-  const prefix = `NK${year}${month}${day}`;
+  const prefix = `NK${yy}${mm}${dd}`;
 
-  const count = await InventoryReceipt.countDocuments({
+  const lastReceipt = await InventoryReceipt.findOne({
     code: {
       $regex: `^${prefix}`,
     },
-  });
+  })
+    .sort({
+      code: -1,
+    })
+    .session(session)
+    .lean();
 
-  const number = String(count + 1).padStart(3, "0");
+  let number = 1;
 
-  return `${prefix}${number}`;
+  if (lastReceipt?.code) {
+    const lastNumber = Number(lastReceipt.code.slice(-3));
+
+    if (Number.isFinite(lastNumber)) {
+      number = lastNumber + 1;
+    }
+  }
+
+  return `${prefix}${String(number).padStart(3, "0")}`;
 };
 
-// ============================================================
+// =====================================================
+// POST /api/inventory
 // NHẬP KHO
-// POST /api/products/inventory/import
-// ============================================================
-const importInventoryAsync = async (req, res) => {
+// =====================================================
+
+const createInventoryReceiptAsync = async (req, res) => {
   const session = await mongoose.startSession();
 
   try {
-    const { supplier = "", note = "", items = [] } = req.body;
+    const { supplier = "", note = "", items = [] } = req.body || {};
 
-    // --------------------------------------------------------
-    // VALIDATE
-    // --------------------------------------------------------
+    // =================================================
+    // VALIDATE REQUEST
+    // =================================================
+
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({
         success: false,
-        message: "Phiếu nhập chưa có sản phẩm",
+        message: "Danh sách sản phẩm nhập kho không được để trống",
       });
     }
 
-    // --------------------------------------------------------
-    // KIỂM TRA TẤT CẢ ITEM
-    // --------------------------------------------------------
-    const receiptItems = [];
+    // =================================================
+    // START TRANSACTION
+    // =================================================
 
-    let totalQty = 0;
-    let totalAmount = 0;
+    let receipt = null;
 
-    for (const item of items) {
-      const { productId, variantName = "", qty, unitCost = 0 } = item;
+    await session.withTransaction(async () => {
+      // ===============================================
+      // TẠO MÃ PHIẾU
+      // ===============================================
 
-      // ------------------------------------------------------
-      // CHECK PRODUCT ID
-      // ------------------------------------------------------
-      if (!productId) {
-        return res.status(400).json({
-          success: false,
-          message: "Thiếu productId",
-        });
-      }
+      const receiptCode = await generateReceiptCode(session);
 
-      if (!mongoose.Types.ObjectId.isValid(productId)) {
-        return res.status(400).json({
-          success: false,
-          message: `productId không hợp lệ: ${productId}`,
-        });
-      }
+      // ===============================================
+      // CACHE PRODUCT
+      // ===============================================
 
-      // ------------------------------------------------------
-      // CHECK QTY
-      // ------------------------------------------------------
-      const quantity = Number(qty);
+      const productCache = new Map();
 
-      if (!Number.isFinite(quantity) || quantity <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Số lượng nhập phải lớn hơn 0",
-        });
-      }
+      // ===============================================
+      // PASS 1
+      // KIỂM TRA TẤT CẢ SẢN PHẨM
+      // ===============================================
 
-      // ------------------------------------------------------
-      // CHECK PRICE
-      // ------------------------------------------------------
-      const cost = Number(unitCost || 0);
+      for (const item of items) {
+        if (!item?.productId) {
+          throw new Error("Sản phẩm không hợp lệ");
+        }
 
-      if (!Number.isFinite(cost) || cost < 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Giá nhập không hợp lệ",
-        });
-      }
+        if (!mongoose.Types.ObjectId.isValid(item.productId)) {
+          throw new Error(`productId không hợp lệ: ${item.productId}`);
+        }
 
-      // ------------------------------------------------------
-      // FIND PRODUCT
-      // ------------------------------------------------------
-      const product = await Product.findById(productId).session(session);
+        const qty = toNumber(item.qty);
 
-      if (!product) {
-        return res.status(404).json({
-          success: false,
-          message: `Không tìm thấy sản phẩm ${productId}`,
-        });
-      }
+        const unitCost = toNumber(item.unitCost);
 
-      // ------------------------------------------------------
-      // CHECK VARIANT
-      // ------------------------------------------------------
-      let variant = null;
+        if (qty <= 0) {
+          throw new Error(`Số lượng nhập phải lớn hơn 0`);
+        }
 
-      if (variantName) {
-        variant = product.variants?.find((item) => item.name === variantName);
+        if (unitCost < 0) {
+          throw new Error(`Giá nhập không hợp lệ`);
+        }
 
-        if (!variant) {
-          return res.status(400).json({
-            success: false,
-            message: `Sản phẩm "${product.title}" không có phân loại "${variantName}"`,
-          });
+        const productId = String(item.productId);
+
+        let product = productCache.get(productId);
+
+        if (!product) {
+          product = await Product.findById(item.productId).session(session);
+
+          if (!product) {
+            throw new Error(`Không tìm thấy sản phẩm ${item.productId}`);
+          }
+
+          productCache.set(productId, product);
+        }
+
+        // =============================================
+        // KIỂM TRA VARIANT
+        // =============================================
+
+        const variantName = String(item.variantName || "").trim();
+
+        if (variantName) {
+          const variant = product.variants?.find(
+            (v) => String(v?.name || "").trim() === variantName,
+          );
+
+          if (!variant) {
+            throw new Error(
+              `Không tìm thấy phân loại "${variantName}" của sản phẩm "${product.title}"`,
+            );
+          }
         }
       }
 
-      const total = quantity * cost;
+      // ===============================================
+      // PASS 2
+      // TĂNG TỒN KHO + TẠO HISTORY
+      // ===============================================
 
-      receiptItems.push({
-        productId: product._id,
-        productTitle: product.title || "",
-        variantName: variantName || "",
-        qty: quantity,
-        unitCost: cost,
-        total,
-      });
+      const receiptItems = [];
 
-      totalQty += quantity;
-      totalAmount += total;
-    }
+      let totalQty = 0;
+      let totalAmount = 0;
 
-    // --------------------------------------------------------
-    // START TRANSACTION
-    // --------------------------------------------------------
-    session.startTransaction();
+      for (const item of items) {
+        const product = productCache.get(String(item.productId));
 
-    // --------------------------------------------------------
-    // CỘNG TỒN KHO
-    // --------------------------------------------------------
-    for (const item of receiptItems) {
-      const product = await Product.findById(item.productId).session(session);
+        if (!product) {
+          throw new Error("Không tìm thấy sản phẩm");
+        }
 
-      if (!product) {
-        throw new Error(`Không tìm thấy sản phẩm ${item.productId}`);
-      }
+        const qty = toNumber(item.qty);
 
-      // ------------------------------------------------------
-      // CÓ VARIANT
-      // ------------------------------------------------------
-      if (item.variantName) {
-        const variantIndex = product.variants.findIndex(
-          (variant) => variant.name === item.variantName,
-        );
+        const unitCost = toNumber(item.unitCost);
 
-        if (variantIndex === -1) {
-          throw new Error(
-            `Không tìm thấy variant "${item.variantName}" của ${product.title}`,
+        const variantName = String(item.variantName || "").trim();
+
+        const productCode = getProductCode(product);
+
+        const itemTotal = qty * unitCost;
+
+        totalQty += qty;
+        totalAmount += itemTotal;
+
+        // =============================================
+        // CÓ VARIANT
+        // =============================================
+
+        if (variantName) {
+          const variant = product.variants?.find(
+            (v) => String(v?.name || "").trim() === variantName,
+          );
+
+          if (!variant) {
+            throw new Error(`Không tìm thấy variant "${variantName}"`);
+          }
+
+          // -------------------------------------------
+          // TỒN VARIANT
+          // -------------------------------------------
+
+          const beforeVariantQty = toNumber(variant.qty);
+
+          const afterVariantQty = beforeVariantQty + qty;
+
+          variant.qty = afterVariantQty;
+
+          // -------------------------------------------
+          // TỔNG TỒN PRODUCT
+          // -------------------------------------------
+
+          const beforeProductQty = toNumber(product.qty);
+
+          const afterProductQty = beforeProductQty + qty;
+
+          product.qty = afterProductQty;
+
+          product.updated_at = new Date();
+
+          await product.save({
+            session,
+          });
+
+          // -------------------------------------------
+          // ITEM PHIẾU NHẬP
+          // -------------------------------------------
+
+          receiptItems.push({
+            productId: product._id,
+
+            productTitle: product.title || "",
+
+            variantName,
+
+            qty,
+
+            unitCost,
+
+            total: itemTotal,
+          });
+
+          // -------------------------------------------
+          // INVENTORY HISTORY
+          // -------------------------------------------
+
+          await InventoryHistory.create(
+            [
+              {
+                type: "import",
+
+                referenceType: "InventoryReceipt",
+
+                referenceId: null,
+
+                referenceCode: receiptCode,
+
+                productId: product._id,
+
+                productTitle: product.title || "",
+
+                productCode,
+
+                variantName,
+
+                qty,
+
+                beforeQty: beforeVariantQty,
+
+                afterQty: afterVariantQty,
+
+                note: note || `Nhập kho theo phiếu ${receiptCode}`,
+
+                createdBy: req.user?._id || null,
+
+                created_at: new Date(),
+              },
+            ],
+            {
+              session,
+            },
           );
         }
 
-        const currentQty = Number(product.variants[variantIndex].qty || 0);
+        // =============================================
+        // KHÔNG CÓ VARIANT
+        // =============================================
+        else {
+          const beforeQty = toNumber(product.qty);
 
-        product.variants[variantIndex].qty = currentQty + item.qty;
+          const afterQty = beforeQty + qty;
 
-        // Cập nhật tổng qty sản phẩm
-        product.qty = product.variants.reduce(
-          (sum, variant) => sum + Number(variant.qty || 0),
-          0,
-        );
+          product.qty = afterQty;
+
+          product.updated_at = new Date();
+
+          await product.save({
+            session,
+          });
+
+          // -------------------------------------------
+          // ITEM PHIẾU NHẬP
+          // -------------------------------------------
+
+          receiptItems.push({
+            productId: product._id,
+
+            productTitle: product.title || "",
+
+            variantName: "",
+
+            qty,
+
+            unitCost,
+
+            total: itemTotal,
+          });
+
+          // -------------------------------------------
+          // INVENTORY HISTORY
+          // -------------------------------------------
+
+          await InventoryHistory.create(
+            [
+              {
+                type: "import",
+
+                referenceType: "InventoryReceipt",
+
+                referenceId: null,
+
+                referenceCode: receiptCode,
+
+                productId: product._id,
+
+                productTitle: product.title || "",
+
+                productCode,
+
+                variantName: "",
+
+                qty,
+
+                beforeQty,
+
+                afterQty,
+
+                note: note || `Nhập kho theo phiếu ${receiptCode}`,
+
+                createdBy: req.user?._id || null,
+
+                created_at: new Date(),
+              },
+            ],
+            {
+              session,
+            },
+          );
+        }
       }
 
-      // ------------------------------------------------------
-      // KHÔNG CÓ VARIANT
-      // ------------------------------------------------------
-      else {
-        product.qty = Number(product.qty || 0) + item.qty;
-      }
+      // ===============================================
+      // TẠO INVENTORY RECEIPT
+      // ===============================================
 
-      product.updated_at = new Date();
+      const created = await InventoryReceipt.create(
+        [
+          {
+            code: receiptCode,
 
-      await product.save({
-        session,
-      });
-    }
+            supplier: String(supplier || "").trim(),
 
-    // --------------------------------------------------------
-    // TẠO MÃ PHIẾU
-    // --------------------------------------------------------
-    const code = await generateReceiptCode();
+            note: String(note || "").trim(),
 
-    // --------------------------------------------------------
-    // TẠO PHIẾU NHẬP
-    // --------------------------------------------------------
-    const receipt = await InventoryReceipt.create(
-      [
+            items: receiptItems,
+
+            totalQty,
+
+            totalAmount,
+
+            status: "completed",
+
+            createdBy: req.user?._id || null,
+
+            created_at: new Date(),
+
+            updated_at: new Date(),
+          },
+        ],
         {
-          code,
-
-          supplier: String(supplier || "").trim(),
-
-          note: String(note || "").trim(),
-
-          items: receiptItems,
-
-          totalQty,
-
-          totalAmount,
-
-          status: "completed",
-
-          createdBy: req.user?.id || req.user?._id || null,
-
-          created_at: new Date(),
-
-          updated_at: new Date(),
+          session,
         },
-      ],
-      {
-        session,
-      },
-    );
+      );
 
-    // --------------------------------------------------------
-    // COMMIT
-    // --------------------------------------------------------
-    await session.commitTransaction();
+      receipt = created[0];
+
+      // ===============================================
+      // UPDATE HISTORY REFERENCE ID
+      // ===============================================
+
+      await InventoryHistory.updateMany(
+        {
+          referenceType: "InventoryReceipt",
+
+          referenceCode: receiptCode,
+
+          referenceId: null,
+        },
+        {
+          $set: {
+            referenceId: receipt._id,
+          },
+        },
+        {
+          session,
+        },
+      );
+    });
+
+    // =================================================
+    // RESPONSE
+    // =================================================
 
     return res.status(201).json({
       success: true,
 
       message: "Nhập kho thành công",
 
-      receipt: receipt[0],
+      receipt,
     });
   } catch (error) {
-    // --------------------------------------------------------
-    // ROLLBACK
-    // --------------------------------------------------------
-    try {
-      await session.abortTransaction();
-    } catch (e) {}
+    console.error("createInventoryReceiptAsync:", error);
 
-    console.error("importInventoryAsync:", error);
-
-    return res.status(500).json({
+    return res.status(400).json({
       success: false,
+
       message: error?.message || "Không thể nhập kho",
     });
   } finally {
@@ -264,33 +451,62 @@ const importInventoryAsync = async (req, res) => {
   }
 };
 
-// ============================================================
+// =====================================================
+// GET /api/inventory
 // DANH SÁCH PHIẾU NHẬP
-// GET /api/products/inventory/import
-// ============================================================
-const listInventoryImportsAsync = async (req, res) => {
+// =====================================================
+
+const listInventoryReceiptsAsync = async (req, res) => {
   try {
-    const page = Math.max(Number(req.query.page) || 1, 1);
+    const { page = 1, limit = 20, search = "" } = req.query;
 
-    const limit = Math.min(Number(req.query.limit) || 20, 100);
+    const currentPage = Math.max(Number(page) || 1, 1);
 
-    const skip = (page - 1) * limit;
+    const currentLimit = Math.min(Number(limit) || 20, 100);
 
-    const search = String(req.query.search || "").trim();
+    const skip = (currentPage - 1) * currentLimit;
 
     const filter = {};
 
-    if (search) {
+    const keyword = String(search || "").trim();
+
+    // ===============================================
+    // SEARCH
+    // ===============================================
+
+    if (keyword) {
       filter.$or = [
         {
           code: {
-            $regex: search,
+            $regex: keyword,
             $options: "i",
           },
         },
+
         {
           supplier: {
-            $regex: search,
+            $regex: keyword,
+            $options: "i",
+          },
+        },
+
+        {
+          note: {
+            $regex: keyword,
+            $options: "i",
+          },
+        },
+
+        {
+          "items.productTitle": {
+            $regex: keyword,
+            $options: "i",
+          },
+        },
+
+        {
+          "items.variantName": {
+            $regex: keyword,
             $options: "i",
           },
         },
@@ -303,11 +519,13 @@ const listInventoryImportsAsync = async (req, res) => {
           created_at: -1,
         })
         .skip(skip)
-        .limit(limit)
+        .limit(currentLimit)
         .lean(),
 
       InventoryReceipt.countDocuments(filter),
     ]);
+
+    const totalPages = Math.max(Math.ceil(total / currentLimit), 1);
 
     return res.status(200).json({
       success: true,
@@ -316,66 +534,72 @@ const listInventoryImportsAsync = async (req, res) => {
 
       total,
 
-      page,
+      page: currentPage,
 
-      limit,
+      limit: currentLimit,
 
-      totalPages: Math.ceil(total / limit),
+      totalPages,
 
-      hasMore: page * limit < total,
+      hasMore: currentPage < totalPages,
     });
   } catch (error) {
-    console.error("listInventoryImportsAsync:", error);
+    console.error("listInventoryReceiptsAsync:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Không thể lấy danh sách phiếu nhập",
+
+      message: error?.message || "Không thể lấy danh sách phiếu nhập",
     });
   }
 };
 
-// ============================================================
+// =====================================================
+// GET /api/inventory/:id
 // CHI TIẾT PHIẾU NHẬP
-// GET /api/products/inventory/import/:id
-// ============================================================
-const getInventoryImportAsync = async (req, res) => {
+// =====================================================
+
+const getInventoryReceiptDetailAsync = async (req, res) => {
   try {
     const { id } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
         success: false,
+
         message: "ID phiếu nhập không hợp lệ",
       });
     }
 
     const receipt = await InventoryReceipt.findById(id)
-      .populate("createdBy", "username")
+      .populate("createdBy", "username name")
       .lean();
 
     if (!receipt) {
       return res.status(404).json({
         success: false,
+
         message: "Không tìm thấy phiếu nhập",
       });
     }
 
     return res.status(200).json({
       success: true,
+
       receipt,
     });
   } catch (error) {
-    console.error("getInventoryImportAsync:", error);
+    console.error("getInventoryReceiptDetailAsync:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Không thể lấy phiếu nhập",
+
+      message: error?.message || "Không thể lấy chi tiết phiếu nhập",
     });
   }
 };
 
 module.exports = {
-  importInventoryAsync,
-  listInventoryImportsAsync,
-  getInventoryImportAsync,
+  createInventoryReceiptAsync,
+  listInventoryReceiptsAsync,
+  getInventoryReceiptDetailAsync,
 };

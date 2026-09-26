@@ -26,7 +26,9 @@ const categoryRoute = require("./src/routes/categoryRoute");
 const customerRouter = require("./src/routes/customerRoute");
 const inventoryRouter = require("./src/routes/inventoryRouter");
 const analyticsRoutes = require("./src/routes/analyticsRoutes");
-
+const settingsRoutes = require("./src/routes/settings");
+const adminRoutes = require("./src/routes/admin");
+const InventoryHistory = require("./src/routes/inventoryHistoryRouter");
 app.use(cors());
 
 // Connect to MongoDB
@@ -42,6 +44,10 @@ app.use(stripeCheckoutRoute);
 app.use(paypalCheckoutRoute);
 app.use("/api/order", orderRoute);
 app.use("/api/customers", customerRouter);
-app.use("/api/products/inventory", inventoryRouter);
+app.use("/api/inventory", inventoryRouter);
+// app.use("/api/products/inventory", inventoryRouter);
 app.use("/api/analytics", analyticsRoutes);
+app.use("/api/settings", settingsRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/inventory-history", InventoryHistory);
 module.exports = app;

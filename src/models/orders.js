@@ -139,6 +139,10 @@ const orderSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    stockDeducted: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     versionKey: false,

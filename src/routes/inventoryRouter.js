@@ -2,19 +2,30 @@ const express = require("express");
 
 const router = express.Router();
 
+const auth = require("../middlewares/auth");
+const adminAuth = require("../middlewares/adminAuth");
+
 const inventoryController = require("../controllers/inventoryController");
 
-// ============================================================
-// NHẬP KHO
-// ============================================================
+router.post(
+  "/",
+  auth,
+  adminAuth,
+  inventoryController.createInventoryReceiptAsync,
+);
 
-// Tạo phiếu nhập
-router.post("/import", inventoryController.importInventoryAsync);
+router.get(
+  "/",
+  auth,
+  adminAuth,
+  inventoryController.listInventoryReceiptsAsync,
+);
 
-// Danh sách phiếu nhập
-router.get("/import", inventoryController.listInventoryImportsAsync);
-
-// Chi tiết phiếu nhập
-router.get("/import/:id", inventoryController.getInventoryImportAsync);
+router.get(
+  "/:id",
+  auth,
+  adminAuth,
+  inventoryController.getInventoryReceiptDetailAsync,
+);
 
 module.exports = router;

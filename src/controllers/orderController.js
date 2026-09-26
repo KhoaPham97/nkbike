@@ -3,7 +3,7 @@ const mongoose = require("mongoose");
 const Order = require("../models/orders");
 const Customer = require("../models/customer");
 const { Product } = require("../models/products");
-
+const { InventoryHistory } = require("../models/inventoryHistory");
 /* =========================================================
    CONSTANT
 ========================================================= */
@@ -39,7 +39,490 @@ const getProductCode = (product) => {
     ""
   );
 };
+const syncOrderStockAsync = async (req, res) => {
+  const session = await mongoose.startSession();
 
+  try {
+    const { orderId } = req.body || {};
+
+    const filter = {
+      stockDeducted: {
+        $ne: true,
+      },
+
+      // Không đồng bộ đơn đã hủy
+      status: {
+        $ne: "cancelled",
+      },
+    };
+
+    // Nếu FE truyền orderId thì chỉ đồng bộ đơn đó
+    if (orderId) {
+      if (!mongoose.Types.ObjectId.isValid(orderId)) {
+        return res.status(400).json({
+          success: false,
+          message: "orderId không hợp lệ",
+        });
+      }
+
+      filter._id = orderId;
+    }
+
+    const result = {
+      totalOrders: 0,
+      updatedOrders: 0,
+      updatedItems: 0,
+      skippedOrders: 0,
+      historyRecords: 0,
+    };
+
+    await session.withTransaction(async () => {
+      const orders = await Order.find(filter)
+        .sort({
+          created_at: 1,
+        })
+        .session(session);
+
+      result.totalOrders = orders.length;
+
+      for (const order of orders) {
+        // =====================================================
+        // KIỂM TRA ĐƠN KHÔNG CÓ SẢN PHẨM
+        // =====================================================
+        if (!Array.isArray(order.items) || order.items.length === 0) {
+          // Chỉ đánh dấu đã kiểm tra tồn kho
+          // KHÔNG thay đổi trạng thái đơn
+          order.stockDeducted = true;
+          order.updated_at = new Date();
+
+          await order.save({
+            session,
+          });
+
+          result.skippedOrders++;
+
+          continue;
+        }
+
+        // Cache product để tránh query Mongo nhiều lần
+        const productCache = new Map();
+
+        // =====================================================
+        // PASS 1
+        // KIỂM TRA TOÀN BỘ TỒN KHO TRƯỚC
+        // =====================================================
+        for (const item of order.items) {
+          if (!item?.productId) {
+            throw new Error(
+              `Đơn ${order.code || order._id} có sản phẩm không hợp lệ`,
+            );
+          }
+
+          const productId = String(item.productId);
+
+          let product = productCache.get(productId);
+
+          if (!product) {
+            product = await Product.findById(item.productId).session(session);
+
+            if (!product) {
+              throw new Error(
+                `Không tìm thấy sản phẩm ${item.productId} trong đơn ${order.code || order._id}`,
+              );
+            }
+
+            productCache.set(productId, product);
+          }
+
+          const qty = toNumber(item.qty);
+
+          if (qty <= 0) {
+            throw new Error(
+              `Số lượng không hợp lệ trong đơn ${order.code || order._id}`,
+            );
+          }
+
+          const variantName = String(item.variantName || "").trim();
+
+          // ===================================================
+          // CÓ VARIANT
+          // ===================================================
+          if (variantName) {
+            const variant = product.variants?.find(
+              (v) => String(v?.name || "").trim() === variantName,
+            );
+
+            if (!variant) {
+              throw new Error(
+                `Không tìm thấy variant "${variantName}" của sản phẩm "${product.title}"`,
+              );
+            }
+
+            const stock = toNumber(variant.qty);
+
+            if (stock < qty) {
+              throw new Error(
+                `Sản phẩm "${product.title}" - "${variantName}" chỉ còn ${stock}, cần ${qty}`,
+              );
+            }
+          }
+
+          // ===================================================
+          // KHÔNG CÓ VARIANT
+          // ===================================================
+          else {
+            const stock = toNumber(product.qty);
+
+            if (stock < qty) {
+              throw new Error(
+                `Sản phẩm "${product.title}" chỉ còn ${stock}, cần ${qty}`,
+              );
+            }
+          }
+        }
+
+        // =====================================================
+        // PASS 2
+        // TRỪ TỒN + GHI LỊCH SỬ
+        // =====================================================
+        for (const item of order.items) {
+          const product = productCache.get(String(item.productId));
+
+          if (!product) {
+            throw new Error("Không tìm thấy sản phẩm");
+          }
+
+          const qty = toNumber(item.qty);
+
+          const variantName = String(item.variantName || "").trim();
+
+          // ===================================================
+          // CÓ VARIANT
+          // ===================================================
+          if (variantName) {
+            const variant = product.variants?.find(
+              (v) => String(v?.name || "").trim() === variantName,
+            );
+
+            if (!variant) {
+              throw new Error(
+                `Không tìm thấy variant "${variantName}" của sản phẩm "${product.title}"`,
+              );
+            }
+
+            const beforeVariantQty = toNumber(variant.qty);
+
+            const afterVariantQty = beforeVariantQty - qty;
+
+            // -----------------------------------------------
+            // Trừ tồn variant
+            // -----------------------------------------------
+            variant.qty = afterVariantQty;
+
+            // -----------------------------------------------
+            // Trừ tồn tổng sản phẩm
+            // Giữ nguyên logic createOrderAsync hiện tại
+            // -----------------------------------------------
+            const beforeProductQty = toNumber(product.qty);
+
+            const afterProductQty = Math.max(0, beforeProductQty - qty);
+
+            product.qty = afterProductQty;
+
+            product.updated_at = new Date();
+
+            await product.save({
+              session,
+            });
+
+            // -----------------------------------------------
+            // Lưu lịch sử kho
+            // -----------------------------------------------
+            await InventoryHistory.create(
+              [
+                {
+                  type: "order",
+
+                  referenceType: "Order",
+
+                  referenceId: order._id,
+
+                  referenceCode: order.code || "",
+
+                  productId: product._id,
+
+                  productTitle: product.title || "",
+
+                  productCode: getProductCode(product),
+
+                  variantName,
+
+                  // Xuất kho = số âm
+                  qty: -qty,
+
+                  // Tồn của variant
+                  beforeQty: beforeVariantQty,
+
+                  afterQty: afterVariantQty,
+
+                  note: `Xuất kho theo đơn hàng ${order.code || order._id}`,
+
+                  createdBy: req.user?._id || null,
+
+                  created_at: new Date(),
+                },
+              ],
+              {
+                session,
+              },
+            );
+
+            result.updatedItems++;
+            result.historyRecords++;
+          }
+
+          // ===================================================
+          // KHÔNG CÓ VARIANT
+          // ===================================================
+          else {
+            const beforeQty = toNumber(product.qty);
+
+            const afterQty = Math.max(0, beforeQty - qty);
+
+            product.qty = afterQty;
+
+            product.updated_at = new Date();
+
+            await product.save({
+              session,
+            });
+
+            // -----------------------------------------------
+            // Lưu lịch sử kho
+            // -----------------------------------------------
+            await InventoryHistory.create(
+              [
+                {
+                  type: "order",
+
+                  referenceType: "Order",
+
+                  referenceId: order._id,
+
+                  referenceCode: order.code || "",
+
+                  productId: product._id,
+
+                  productTitle: product.title || "",
+
+                  productCode: getProductCode(product),
+
+                  variantName: "",
+
+                  // Xuất kho = số âm
+                  qty: -qty,
+
+                  beforeQty,
+
+                  afterQty,
+
+                  note: `Xuất kho theo đơn hàng ${order.code || order._id}`,
+
+                  createdBy: req.user?._id || null,
+
+                  created_at: new Date(),
+                },
+              ],
+              {
+                session,
+              },
+            );
+
+            result.updatedItems++;
+            result.historyRecords++;
+          }
+        }
+
+        // =====================================================
+        // ĐÁNH DẤU ĐÃ ĐỒNG BỘ TỒN KHO
+        //
+        // QUAN TRỌNG:
+        // KHÔNG thay đổi status của order
+        // =====================================================
+        order.stockDeducted = true;
+
+        order.updated_at = new Date();
+
+        await order.save({
+          session,
+        });
+
+        result.updatedOrders++;
+      }
+    });
+
+    return res.status(200).json({
+      success: true,
+
+      message: "Đồng bộ tồn kho thành công",
+
+      totalOrders: result.totalOrders,
+
+      updatedOrders: result.updatedOrders,
+
+      updatedItems: result.updatedItems,
+
+      historyRecords: result.historyRecords,
+
+      skippedOrders: result.skippedOrders,
+    });
+  } catch (error) {
+    console.error("syncOrderStockAsync:", error);
+
+    return res.status(400).json({
+      success: false,
+
+      message: error?.message || "Không thể đồng bộ tồn kho",
+    });
+  } finally {
+    await session.endSession();
+  }
+};
+const rollbackOrderStockAsync = async (req, res) => {
+  const session = await mongoose.startSession();
+
+  try {
+    const { orderId } = req.body || {};
+
+    if (!orderId) {
+      return res.status(400).json({
+        success: false,
+        message: "Thiếu orderId",
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({
+        success: false,
+        message: "orderId không hợp lệ",
+      });
+    }
+
+    let result = {
+      historyRecords: 0,
+      restoredItems: 0,
+    };
+
+    await session.withTransaction(async () => {
+      const order = await Order.findById(orderId).session(session);
+
+      if (!order) {
+        throw new Error("Không tìm thấy đơn hàng");
+      }
+
+      if (order.stockDeducted !== true) {
+        throw new Error("Đơn hàng này chưa được đồng bộ tồn kho");
+      }
+
+      const histories = await InventoryHistory.find({
+        referenceType: "Order",
+        referenceId: order._id,
+        type: "order",
+        rollback: {
+          $ne: true,
+        },
+      }).session(session);
+
+      if (!histories.length) {
+        throw new Error("Không tìm thấy lịch sử xuất kho để rollback");
+      }
+
+      for (const history of histories) {
+        const product = await Product.findById(history.productId).session(
+          session,
+        );
+
+        if (!product) {
+          throw new Error(`Không tìm thấy sản phẩm ${history.productId}`);
+        }
+
+        const restoreQty = Math.abs(Number(history.qty || 0));
+
+        if (restoreQty <= 0) {
+          continue;
+        }
+
+        // ==========================================
+        // CÓ VARIANT
+        // ==========================================
+        if (history.variantName) {
+          const variant = product.variants?.find(
+            (item) =>
+              String(item?.name || "").trim() ===
+              String(history.variantName).trim(),
+          );
+
+          if (!variant) {
+            throw new Error(`Không tìm thấy variant "${history.variantName}"`);
+          }
+
+          variant.qty = Number(variant.qty || 0) + restoreQty;
+
+          // Tồn tổng sản phẩm
+          product.qty = Number(product.qty || 0) + restoreQty;
+        }
+
+        // ==========================================
+        // KHÔNG CÓ VARIANT
+        // ==========================================
+        else {
+          product.qty = Number(product.qty || 0) + restoreQty;
+        }
+
+        product.updated_at = new Date();
+
+        await product.save({
+          session,
+        });
+
+        // Đánh dấu history đã rollback
+        history.rollback = true;
+        history.rollback_at = new Date();
+        history.rollbackBy = req.user?._id || null;
+
+        await history.save({
+          session,
+        });
+
+        result.historyRecords++;
+        result.restoredItems++;
+      }
+
+      // Đơn không còn được đánh dấu đã trừ kho
+      order.stockDeducted = false;
+      order.updated_at = new Date();
+
+      await order.save({
+        session,
+      });
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Rollback tồn kho thành công",
+      ...result,
+    });
+  } catch (error) {
+    console.error("rollbackOrderStockAsync:", error);
+
+    return res.status(400).json({
+      success: false,
+      message: error?.message || "Không thể rollback tồn kho",
+    });
+  } finally {
+    await session.endSession();
+  }
+};
 /* =========================================================
    GET PRODUCT PRICE
 ========================================================= */
@@ -829,6 +1312,7 @@ const listOrdersAsync = async (req, res) => {
 const updateOrderStatusAsync = async (req, res) => {
   try {
     const { id } = req.params;
+    console.log("id", id);
     const { status: newStatus } = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -1033,4 +1517,6 @@ module.exports = {
   syncAllUncompletedOrderPricesAsync,
 
   syncProductPriceToOrders,
+  syncOrderStockAsync,
+  rollbackOrderStockAsync,
 };

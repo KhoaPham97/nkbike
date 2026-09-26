@@ -1,14 +1,14 @@
 const adminAuth = async (req, res, next) => {
   try {
-    if (!req.user || req.user.role !== 'admin') {
-      throw new Error()
+    if (!req.user || req.user.role !== "admin") {
+      throw new Error();
     }
-    next()
+    next();
   } catch (error) {
     res.status(401).send({
-      error: 'admin access only',
-    })
+      error: "admin access only",
+    });
   }
-}
+};
 
-module.exports = adminAuth
+module.exports = adminAuth;
