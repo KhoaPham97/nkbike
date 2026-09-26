@@ -3,7 +3,7 @@ const express = require("express");
 const router = express.Router();
 
 const customerController = require("../controllers/customerController");
-
+router.get("/:id/orders", customerController.getCustomerOrdersAsync);
 router.get("/", customerController.listCustomersAsync);
 
 router.get("/:id", customerController.getCustomerByIdAsync);

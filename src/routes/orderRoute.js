@@ -26,4 +26,6 @@ router.post(
   adminAuth,
   orderController.rollbackOrderStockAsync,
 );
+router.post("/sync-item-price", orderController.syncProductPriceAsync);
+router.post("/pay-debt", orderController.payOrderDebtAsync);
 module.exports = router;
