@@ -1950,6 +1950,111 @@ const payOrderDebtAsync = async (req, res) => {
     });
   }
 };
+const syncOrderVariantsAsync = async (req, res) => {
+  try {
+    const { orderId } = req.body;
+
+    if (!orderId) {
+      return res.status(400).json({
+        success: false,
+        message: "Thiếu orderId",
+      });
+    }
+
+    const order = await Order.findById(orderId);
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy order",
+      });
+    }
+
+    let updatedItems = 0;
+    let skippedItems = 0;
+
+    for (const item of order.items) {
+      if (!item.productId) {
+        skippedItems++;
+        continue;
+      }
+
+      const variantName = String(
+        item.variantName.length === 0 ? "Mặc định" : item.variantName || "",
+      ).trim();
+
+      if (!variantName) {
+        skippedItems++;
+        continue;
+      }
+
+      const product = await Product.findById(item.productId).lean();
+
+      if (!product) {
+        skippedItems++;
+        continue;
+      }
+
+      const variant = (product.variants || []).find(
+        (v) =>
+          String(v.name || "")
+            .trim()
+            .toLowerCase() === variantName.toLowerCase(),
+      );
+
+      if (!variant) {
+        console.log(
+          `Không tìm thấy variant "${variantName}" trong product ${item.productId}`,
+        );
+
+        skippedItems++;
+        continue;
+      }
+
+      // Lấy defaultPrice và convert sang Number
+      const defaultPrice = Number(variant.defaultPrice);
+
+      if (!Number.isFinite(defaultPrice)) {
+        console.log(
+          `Variant "${variantName}" không có defaultPrice:`,
+          variant.defaultPrice,
+        );
+
+        skippedItems++;
+        continue;
+      }
+
+      // ADD defaultPrice vào order item
+      item.defaultPrice = defaultPrice;
+
+      updatedItems++;
+    }
+
+    if (updatedItems > 0) {
+      order.markModified("items");
+      await order.save();
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Đã thêm defaultPrice vào order items",
+      data: {
+        orderId,
+        updatedItems,
+        skippedItems,
+        order,
+      },
+    });
+  } catch (error) {
+    console.error("syncOrderVariantsAsync error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Lỗi thêm defaultPrice",
+      error: error.message,
+    });
+  }
+};
 /* =========================================================
    EXPORT
 ========================================================= */
@@ -1973,4 +2078,5 @@ module.exports = {
 
   rollbackOrderStockAsync,
   payOrderDebtAsync,
+  syncOrderVariantsAsync,
 };

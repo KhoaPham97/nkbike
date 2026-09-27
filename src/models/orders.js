@@ -27,7 +27,10 @@ const orderItemSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
-
+    defaultPrice: {
+      type: Number,
+      default: null,
+    },
     qty: {
       type: Number,
       default: 1,

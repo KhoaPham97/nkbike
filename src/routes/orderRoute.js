@@ -27,5 +27,7 @@ router.post(
   orderController.rollbackOrderStockAsync,
 );
 router.post("/sync-item-price", orderController.syncProductPriceAsync);
+router.post("/sync-variants", orderController.syncOrderVariantsAsync);
+
 router.post("/pay-debt", orderController.payOrderDebtAsync);
 module.exports = router;

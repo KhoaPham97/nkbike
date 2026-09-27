@@ -253,6 +253,7 @@ module.exports = {
               name: variant.name || "",
 
               price: String(variant.price || "0"),
+              defaultPrice: String(variant.defaultPrice || "0"),
 
               qty: Number(variant.qty || 0),
             }))
@@ -375,6 +376,7 @@ module.exports = {
             product.variants = productData.variants.map((variant) => ({
               name: variant.name || "",
               price: String(variant.price || "0"),
+              defaultPrice: String(variant.defaultPrice || "0"),
               qty: Number(variant.qty || 0),
             }));
           }

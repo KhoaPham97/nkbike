@@ -12,6 +12,10 @@ const variantSchema = new mongoose.Schema(
       type: String,
       default: "0",
     },
+    defaultPrice: {
+      type: String,
+      default: "0",
+    },
 
     qty: {
       type: Number,
