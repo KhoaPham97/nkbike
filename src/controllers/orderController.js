@@ -373,6 +373,7 @@ const createOrderAsync = async (req, res) => {
         let variant = null;
 
         let price = toNumber(product.price);
+        let defaultPrice = toNumber(product.defaultPrice);
 
         /* =================================================
              VARIANT
@@ -388,6 +389,7 @@ const createOrderAsync = async (req, res) => {
           }
 
           price = toNumber(variant.price);
+          defaultPrice = toNumber(variant.defaultPrice);
         }
 
         /* =================================================
@@ -500,6 +502,7 @@ const createOrderAsync = async (req, res) => {
           variantName,
 
           price,
+          defaultPrice,
 
           qty: item.qty,
 
@@ -2013,19 +2016,16 @@ const syncOrderVariantsAsync = async (req, res) => {
 
       // Lấy defaultPrice và convert sang Number
       const defaultPrice = Number(variant.defaultPrice);
+      const price = Number(variant.price);
 
       if (!Number.isFinite(defaultPrice)) {
-        console.log(
-          `Variant "${variantName}" không có defaultPrice:`,
-          variant.defaultPrice,
-        );
-
         skippedItems++;
         continue;
       }
 
       // ADD defaultPrice vào order item
       item.defaultPrice = defaultPrice;
+      item.price = price ?? 0;
 
       updatedItems++;
     }
