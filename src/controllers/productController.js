@@ -38,67 +38,8 @@ module.exports = {
         : {};
 
       // =====================================================
-      // CASE 1: LOAD ALL
-      // type=all hoặc không truyền type
-      // Không paging
+      // PAGINATION
       // =====================================================
-      if (!type || type === "all") {
-        const products = await Product.aggregate([
-          {
-            $match: searchFilter,
-          },
-
-          // qty đang là String => chuyển sang Number
-          {
-            $addFields: {
-              qtyNumber: {
-                $convert: {
-                  input: "$qty",
-                  to: "double",
-                  onError: 0,
-                  onNull: 0,
-                },
-              },
-            },
-          },
-
-          // Ưu tiên qty > 0
-          {
-            $addFields: {
-              inStock: {
-                $cond: [{ $gt: ["$qtyNumber", 0] }, 1, 0],
-              },
-            },
-          },
-
-          // Còn hàng trước -> title A-Z
-          {
-            $sort: {
-              inStock: -1,
-              title: 1,
-            },
-          },
-
-          // Không trả field tạm
-          {
-            $project: {
-              qtyNumber: 0,
-              inStock: 0,
-            },
-          },
-        ]);
-
-        return res.status(200).json({
-          products,
-          total: products.length,
-        });
-      }
-
-      // =====================================================
-      // CASE 2: LOAD THEO TYPE
-      // Có paging + search
-      // =====================================================
-
       const page = Math.max(Number(req.query.page) || 1, 1);
 
       const limit = Math.min(Number(req.query.limit) || 40, 100);
@@ -106,24 +47,32 @@ module.exports = {
       const skip = (page - 1) * limit;
 
       // =====================================================
-      // FILTER TYPE + SEARCH
+      // FILTER
+      // type=all hoặc không truyền type
+      // => lấy tất cả sản phẩm
+      //
+      // type=1/2/3
+      // => chỉ lấy đúng type
       // =====================================================
-
-      const filter = {
-        type,
-        ...searchFilter,
-      };
+      const filter =
+        !type || type === "all"
+          ? {
+              ...searchFilter,
+            }
+          : {
+              type,
+              ...searchFilter,
+            };
 
       // =====================================================
       // GET PRODUCTS
       // =====================================================
-
       const products = await Product.aggregate([
         {
           $match: filter,
         },
 
-        // qty String -> Number
+        // qty đang là String => chuyển sang Number
         {
           $addFields: {
             qtyNumber: {
@@ -137,7 +86,9 @@ module.exports = {
           },
         },
 
-        // Ưu tiên qty > 0
+        // ===================================================
+        // ƯU TIÊN SẢN PHẨM CÒN HÀNG
+        // ===================================================
         {
           $addFields: {
             inStock: {
@@ -146,7 +97,11 @@ module.exports = {
           },
         },
 
-        // Còn hàng trước -> title A-Z
+        // ===================================================
+        // SORT
+        // Còn hàng trước
+        // Sau đó title A-Z
+        // ===================================================
         {
           $sort: {
             inStock: -1,
@@ -154,7 +109,9 @@ module.exports = {
           },
         },
 
-        // Pagination
+        // ===================================================
+        // PAGINATION
+        // ===================================================
         {
           $skip: skip,
         },
@@ -163,7 +120,9 @@ module.exports = {
           $limit: limit,
         },
 
-        // Xóa field tạm
+        // ===================================================
+        // XÓA FIELD TẠM
+        // ===================================================
         {
           $project: {
             qtyNumber: 0,
@@ -175,11 +134,15 @@ module.exports = {
       // =====================================================
       // COUNT
       // =====================================================
-
       const total = await Product.countDocuments(filter);
 
-      const hasMore = page * limit < total;
+      const totalPages = Math.ceil(total / limit);
 
+      const hasMore = page < totalPages;
+
+      // =====================================================
+      // RESPONSE GIỐNG NHAU CHO TẤT CẢ TYPE
+      // =====================================================
       return res.status(200).json({
         products,
 
@@ -187,7 +150,7 @@ module.exports = {
           page,
           limit,
           total,
-          totalPages: Math.ceil(total / limit),
+          totalPages,
           hasMore,
         },
       });
@@ -199,6 +162,7 @@ module.exports = {
       });
     }
   },
+
   // get product by Id
   async getProductAsync(req, res) {
     const productId = req.params.id;
