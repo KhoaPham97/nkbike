@@ -2,6 +2,9 @@ const mongoose = require("mongoose");
 
 const customerSchema = new mongoose.Schema(
   {
+    // =========================
+    // THÔNG TIN KHÁCH HÀNG
+    // =========================
     name: {
       type: String,
       required: true,
@@ -24,13 +27,39 @@ const customerSchema = new mongoose.Schema(
       type: String,
       default: "",
       trim: true,
+      lowercase: true,
     },
 
-    note: {
+    // =========================
+    // TÀI KHOẢN ĐĂNG NHẬP
+    // =========================
+    username: {
       type: String,
-      default: "",
+      // required: true,
+      unique: true,
+      trim: true,
+      lowercase: true,
     },
 
+    password: {
+      type: String,
+      required: true,
+      select: false,
+    },
+
+    // pending  = chờ admin duyệt
+    // active   = được phép đăng nhập
+    // blocked  = bị khóa
+    status: {
+      type: String,
+      enum: ["pending", "active", "blocked"],
+      default: "pending",
+      index: true,
+    },
+
+    // =========================
+    // THỐNG KÊ
+    // =========================
     totalOrders: {
       type: Number,
       default: 0,
@@ -44,6 +73,19 @@ const customerSchema = new mongoose.Schema(
     debt: {
       type: Number,
       default: 0,
+    },
+
+    // =========================
+    // KHÁC
+    // =========================
+    note: {
+      type: String,
+      default: "",
+    },
+
+    lastLoginAt: {
+      type: Date,
+      default: null,
     },
 
     created_at: {
@@ -61,8 +103,19 @@ const customerSchema = new mongoose.Schema(
   },
 );
 
+// =========================
+// INDEX
+// =========================
+
 customerSchema.index({ phone: 1 });
+customerSchema.index({ email: 1 });
+customerSchema.index({ username: 1 });
+customerSchema.index({ status: 1 });
 customerSchema.index({ created_at: -1 });
+
+// =========================
+// MODEL
+// =========================
 
 const Customer =
   mongoose.models.customers || mongoose.model("customers", customerSchema);
