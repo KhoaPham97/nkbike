@@ -30,4 +30,5 @@ router.post("/sync-item-price", orderController.syncProductPriceAsync);
 router.post("/sync-variants", orderController.syncOrderVariantsAsync);
 
 router.post("/pay-debt", orderController.payOrderDebtAsync);
+router.post("/rebuild-sold-qty", orderController.rebuildProductSoldQtyAsync);
 module.exports = router;

@@ -66,4 +66,13 @@ router.patch("/api/products", productController.updateProductAsync);
 
 router.delete("/api/products/:id", productController.deleteProductAsync);
 
+router.get(
+  "/api/products/top-selling",
+  productController.getTopSellingProductsAsync,
+);
+router.put(
+  "/api/products/update-rating-5",
+  productController.updateAllProductsRatingAsync,
+);
+
 module.exports = router;

@@ -26,7 +26,145 @@ const ALLOWED_PAYMENT_METHODS = ["cash", "transfer", "cod", "debt"];
 /* =========================================================
    HELPER
 ========================================================= */
+/* =========================================================
+   REBUILD SOLD QTY
+   TÍNH LẠI SỐ LƯỢNG ĐÃ BÁN TỪ CÁC ĐƠN COMPLETED
 
+   POST /api/order/rebuild-sold-qty
+========================================================= */
+
+const rebuildProductSoldQtyAsync = async (req, res) => {
+  try {
+    console.log("========================================");
+    console.log("REBUILD PRODUCT SOLD QTY");
+    console.log("========================================");
+
+    /* =====================================================
+       1. RESET TẤT CẢ soldQty VỀ 0
+    ===================================================== */
+
+    await Product.updateMany(
+      {},
+      {
+        $set: {
+          soldQty: 0,
+        },
+      },
+    );
+
+    /* =====================================================
+       2. LẤY TỔNG QTY TỪ CÁC ORDER COMPLETED
+    ===================================================== */
+
+    const soldData = await Order.aggregate([
+      {
+        $match: {
+          status: "completed",
+        },
+      },
+
+      {
+        $unwind: "$items",
+      },
+
+      {
+        $match: {
+          "items.productId": {
+            $exists: true,
+            $ne: null,
+          },
+        },
+      },
+
+      {
+        $group: {
+          _id: "$items.productId",
+
+          soldQty: {
+            $sum: {
+              $convert: {
+                input: "$items.qty",
+                to: "double",
+                onError: 0,
+                onNull: 0,
+              },
+            },
+          },
+        },
+      },
+
+      {
+        $sort: {
+          soldQty: -1,
+        },
+      },
+    ]);
+
+    /* =====================================================
+       3. UPDATE PRODUCT
+    ===================================================== */
+
+    if (soldData.length > 0) {
+      const bulkOperations = soldData
+        .filter((item) => mongoose.Types.ObjectId.isValid(item._id))
+        .map((item) => ({
+          updateOne: {
+            filter: {
+              _id: item._id,
+            },
+
+            update: {
+              $set: {
+                soldQty: Number(item.soldQty) || 0,
+                updated_at: new Date(),
+              },
+            },
+          },
+        }));
+
+      if (bulkOperations.length > 0) {
+        await Product.bulkWrite(bulkOperations);
+      }
+    }
+
+    /* =====================================================
+       4. LẤY TOP BÁN CHẠY ĐỂ RESPONSE
+    ===================================================== */
+
+    const topProducts = await Product.find({
+      soldQty: {
+        $gt: 0,
+      },
+    })
+      .sort({
+        soldQty: -1,
+      })
+      .limit(20)
+      .select("_id title code soldQty qty thumbnail")
+      .lean();
+
+    /* =====================================================
+       5. RESPONSE
+    ===================================================== */
+
+    return res.status(200).json({
+      success: true,
+
+      message: "Đã rebuild số lượng sản phẩm đã bán",
+
+      totalProducts: soldData.length,
+
+      topProducts,
+    });
+  } catch (error) {
+    console.error("rebuildProductSoldQtyAsync:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error?.message || "Không thể rebuild số lượng sản phẩm đã bán",
+    });
+  }
+};
 const toNumber = (value) => {
   const number = Number(value);
 
@@ -285,8 +423,8 @@ const createOrderAsync = async (req, res) => {
 
     await session.withTransaction(async () => {
       /* =================================================
-           CUSTOMER
-        ================================================= */
+         CUSTOMER
+      ================================================= */
 
       let customer = null;
 
@@ -299,8 +437,8 @@ const createOrderAsync = async (req, res) => {
       }
 
       /* =================================================
-           MERGE ITEM
-        ================================================= */
+         MERGE ITEM
+      ================================================= */
 
       const mergedItems = new Map();
 
@@ -325,9 +463,7 @@ const createOrderAsync = async (req, res) => {
         if (!mergedItems.has(key)) {
           mergedItems.set(key, {
             productId: rawItem.productId,
-
             variantName,
-
             qty: 0,
           });
         }
@@ -338,8 +474,8 @@ const createOrderAsync = async (req, res) => {
       }
 
       /* =================================================
-           LOAD PRODUCTS
-        ================================================= */
+         CACHE / DATA
+      ================================================= */
 
       const productCache = new Map();
 
@@ -350,8 +486,8 @@ const createOrderAsync = async (req, res) => {
       let subtotal = 0;
 
       /* =================================================
-           PROCESS ITEMS
-        ================================================= */
+         PROCESS ITEMS
+      ================================================= */
 
       for (const item of mergedItems.values()) {
         const productId = String(item.productId);
@@ -373,11 +509,12 @@ const createOrderAsync = async (req, res) => {
         let variant = null;
 
         let price = toNumber(product.price);
+
         let defaultPrice = toNumber(product.defaultPrice);
 
         /* =================================================
-             VARIANT
-          ================================================= */
+           VARIANT
+        ================================================= */
 
         if (variantName) {
           variant = findVariant(product, variantName);
@@ -389,12 +526,13 @@ const createOrderAsync = async (req, res) => {
           }
 
           price = toNumber(variant.price);
+
           defaultPrice = toNumber(variant.defaultPrice);
         }
 
         /* =================================================
-             CHECK STOCK
-          ================================================= */
+           CHECK STOCK
+        ================================================= */
 
         const stock = variant ? toNumber(variant.qty) : toNumber(product.qty);
 
@@ -407,18 +545,36 @@ const createOrderAsync = async (req, res) => {
         }
 
         /* =================================================
-             ITEM TOTAL
-          ================================================= */
+           ITEM TOTAL
+        ================================================= */
 
         const itemTotal = price * item.qty;
 
         subtotal += itemTotal;
 
         /* =================================================
-             DEDUCT STOCK
-          ================================================= */
+           CURRENT SOLD QTY
+        ================================================= */
+
+        const beforeSoldQty = toNumber(product.soldQty);
+
+        const afterSoldQty = beforeSoldQty + item.qty;
+
+        if (afterSoldQty < 0) {
+          throw new Error(
+            `Số lượng đã bán của sản phẩm "${product.title}" không hợp lệ`,
+          );
+        }
+
+        /* =================================================
+           DEDUCT STOCK
+        ================================================= */
 
         if (variant) {
+          /* ---------------------------------------------
+             VARIANT STOCK
+          --------------------------------------------- */
+
           const beforeVariantQty = toNumber(variant.qty);
 
           const afterVariantQty = beforeVariantQty - item.qty;
@@ -430,8 +586,8 @@ const createOrderAsync = async (req, res) => {
           variant.qty = afterVariantQty;
 
           /* ---------------------------------------------
-               PRODUCT TOTAL STOCK
-            --------------------------------------------- */
+             PRODUCT TOTAL STOCK
+          --------------------------------------------- */
 
           const beforeProductQty = toNumber(product.qty);
 
@@ -444,8 +600,8 @@ const createOrderAsync = async (req, res) => {
           product.qty = afterProductQty;
 
           /* ---------------------------------------------
-               HISTORY
-            --------------------------------------------- */
+             HISTORY
+          --------------------------------------------- */
 
           inventoryHistories.push({
             product,
@@ -455,6 +611,10 @@ const createOrderAsync = async (req, res) => {
             afterQty: afterVariantQty,
           });
         } else {
+          /* ---------------------------------------------
+             PRODUCT STOCK
+          --------------------------------------------- */
+
           const beforeProductQty = toNumber(product.qty);
 
           const afterProductQty = beforeProductQty - item.qty;
@@ -466,8 +626,8 @@ const createOrderAsync = async (req, res) => {
           product.qty = afterProductQty;
 
           /* ---------------------------------------------
-               HISTORY
-            --------------------------------------------- */
+             HISTORY
+          --------------------------------------------- */
 
           inventoryHistories.push({
             product,
@@ -479,8 +639,18 @@ const createOrderAsync = async (req, res) => {
         }
 
         /* =================================================
-             SAVE PRODUCT
-          ================================================= */
+           UPDATE SOLD QTY
+           
+           MỖI LẦN TẠO ĐƠN:
+           
+           soldQty = soldQty + qty
+        ================================================= */
+
+        product.soldQty = afterSoldQty;
+
+        /* =================================================
+           SAVE PRODUCT
+        ================================================= */
 
         product.updated_at = new Date();
 
@@ -489,8 +659,8 @@ const createOrderAsync = async (req, res) => {
         });
 
         /* =================================================
-             ORDER ITEM SNAPSHOT
-          ================================================= */
+           ORDER ITEM SNAPSHOT
+        ================================================= */
 
         orderItems.push({
           productId: product._id,
@@ -502,6 +672,7 @@ const createOrderAsync = async (req, res) => {
           variantName,
 
           price,
+
           defaultPrice,
 
           qty: item.qty,
@@ -513,8 +684,8 @@ const createOrderAsync = async (req, res) => {
       }
 
       /* =================================================
-           TOTAL
-        ================================================= */
+         TOTAL
+      ================================================= */
 
       const totalAmount = Math.max(
         0,
@@ -528,14 +699,14 @@ const createOrderAsync = async (req, res) => {
       const debt = Math.max(0, totalAmount - paidNumber);
 
       /* =================================================
-           ORDER CODE
-        ================================================= */
+         ORDER CODE
+      ================================================= */
 
       const code = await generateOrderCode();
 
       /* =================================================
-           CREATE ORDER
-        ================================================= */
+         CREATE ORDER
+      ================================================= */
 
       const order = new Order({
         code,
@@ -583,8 +754,8 @@ const createOrderAsync = async (req, res) => {
       });
 
       /* =================================================
-           CREATE INVENTORY HISTORY
-        ================================================= */
+         CREATE INVENTORY HISTORY
+      ================================================= */
 
       const historyDocuments = inventoryHistories.map((history) =>
         buildInventoryHistory({
@@ -612,8 +783,8 @@ const createOrderAsync = async (req, res) => {
       }
 
       /* =================================================
-           CUSTOMER
-        ================================================= */
+         CUSTOMER
+      ================================================= */
 
       if (customer) {
         customer.totalOrders = toNumber(customer.totalOrders) + 1;
@@ -629,13 +800,18 @@ const createOrderAsync = async (req, res) => {
         });
       }
 
+      /* =================================================
+         CREATED ORDER
+      ================================================= */
+
       createdOrder = order;
     });
 
     return res.status(201).json({
       success: true,
 
-      message: "Tạo đơn hàng thành công và đã trừ tồn kho",
+      message:
+        "Tạo đơn hàng thành công, đã trừ tồn kho và cập nhật số lượng bán",
 
       order: createdOrder,
     });
@@ -654,6 +830,11 @@ const createOrderAsync = async (req, res) => {
 
 /* =========================================================
    ROLLBACK ORDER STOCK
+========================================================= */
+
+/* =========================================================
+   ROLLBACK ORDER STOCK
+   HOÀN KHO + GIẢM SOLD QTY
 ========================================================= */
 
 const rollbackOrderStockAsync = async (req, res) => {
@@ -684,12 +865,13 @@ const rollbackOrderStockAsync = async (req, res) => {
       historyRecords: 0,
       restoredItems: 0,
       restoredQty: 0,
+      restoredSoldQty: 0,
     };
 
     await session.withTransaction(async () => {
       /* =================================================
-         FIND ORDER
-      ================================================= */
+           FIND ORDER
+        ================================================= */
 
       const order = await Order.findById(orderId).session(session);
 
@@ -702,22 +884,23 @@ const rollbackOrderStockAsync = async (req, res) => {
       }
 
       /* =================================================
-         FIND ACTIVE HISTORY
-         
-         Chỉ lấy lịch sử xuất kho của đơn này.
-         Không lấy những history đã rollback trước đó.
-      ================================================= */
+           FIND ACTIVE HISTORY
+        ================================================= */
 
       const histories = await InventoryHistory.find({
         referenceType: "Order",
+
         referenceId: order._id,
+
         type: "order",
+
         $or: [
           {
             rollback: {
               $exists: false,
             },
           },
+
           {
             rollback: false,
           },
@@ -735,14 +918,14 @@ const rollbackOrderStockAsync = async (req, res) => {
       }
 
       /* =================================================
-         PRODUCT CACHE
-      ================================================= */
+           PRODUCT CACHE
+        ================================================= */
 
       const productCache = new Map();
 
       /* =================================================
-         RESTORE STOCK
-      ================================================= */
+           RESTORE STOCK
+        ================================================= */
 
       for (const history of histories) {
         const productId = String(history.productId);
@@ -768,8 +951,8 @@ const rollbackOrderStockAsync = async (req, res) => {
         const variantName = String(history.variantName || "").trim();
 
         /* =================================================
-           VARIANT
-        ================================================= */
+             VARIANT
+          ================================================= */
 
         if (variantName) {
           const variant = findVariant(product, variantName);
@@ -781,8 +964,8 @@ const rollbackOrderStockAsync = async (req, res) => {
           }
 
           /* ---------------------------------------------
-             RESTORE VARIANT QTY
-          --------------------------------------------- */
+               RESTORE VARIANT
+            --------------------------------------------- */
 
           const beforeVariantQty = toNumber(variant.qty);
 
@@ -791,14 +974,26 @@ const rollbackOrderStockAsync = async (req, res) => {
           variant.qty = afterVariantQty;
 
           /* ---------------------------------------------
-             RESTORE PRODUCT TOTAL QTY
-          --------------------------------------------- */
+               RESTORE PRODUCT QTY
+            --------------------------------------------- */
 
           const beforeProductQty = toNumber(product.qty);
 
           const afterProductQty = beforeProductQty + restoreQty;
 
           product.qty = afterProductQty;
+
+          /* ---------------------------------------------
+               REDUCE SOLD QTY
+            --------------------------------------------- */
+
+          const beforeSoldQty = toNumber(product.soldQty);
+
+          const afterSoldQty = Math.max(0, beforeSoldQty - restoreQty);
+
+          product.soldQty = afterSoldQty;
+
+          result.restoredSoldQty += Math.min(restoreQty, beforeSoldQty);
 
           product.updated_at = new Date();
 
@@ -807,14 +1002,26 @@ const rollbackOrderStockAsync = async (req, res) => {
           });
         } else {
           /* =================================================
-             NO VARIANT
-          ================================================= */
+               NO VARIANT
+            ================================================= */
 
           const beforeQty = toNumber(product.qty);
 
           const afterQty = beforeQty + restoreQty;
 
           product.qty = afterQty;
+
+          /* ---------------------------------------------
+               REDUCE SOLD QTY
+            --------------------------------------------- */
+
+          const beforeSoldQty = toNumber(product.soldQty);
+
+          const afterSoldQty = Math.max(0, beforeSoldQty - restoreQty);
+
+          product.soldQty = afterSoldQty;
+
+          result.restoredSoldQty += Math.min(restoreQty, beforeSoldQty);
 
           product.updated_at = new Date();
 
@@ -823,32 +1030,30 @@ const rollbackOrderStockAsync = async (req, res) => {
           });
         }
 
-        result.historyRecords++;
         result.restoredItems++;
+
         result.restoredQty += restoreQty;
       }
 
       /* =================================================
-         XÓA LỊCH SỬ XUẤT KHO
-         
-         Không dùng:
-           history.rollback = true
-
-         Vì yêu cầu là rollback xong thì
-         lịch sử xuất kho của đơn phải biến mất.
-      ================================================= */
+           DELETE INVENTORY HISTORY
+        ================================================= */
 
       const deleteResult = await InventoryHistory.deleteMany(
         {
           referenceType: "Order",
+
           referenceId: order._id,
+
           type: "order",
+
           $or: [
             {
               rollback: {
                 $exists: false,
               },
             },
+
             {
               rollback: false,
             },
@@ -859,17 +1064,14 @@ const rollbackOrderStockAsync = async (req, res) => {
         },
       );
 
-      /* =================================================
-         UPDATE RESULT
-      ================================================= */
-
       result.historyRecords = deleteResult.deletedCount || 0;
 
       /* =================================================
-         UPDATE ORDER
-      ================================================= */
+           UPDATE ORDER
+        ================================================= */
 
       order.stockDeducted = false;
+
       order.updated_at = new Date();
 
       await order.save({
@@ -877,15 +1079,8 @@ const rollbackOrderStockAsync = async (req, res) => {
       });
 
       /* =================================================
-         UPDATE CUSTOMER
-         
-         Rollback đơn:
-         - Không trừ totalOrders
-         - Không trừ totalSpent
-         - Công nợ phải được đồng bộ lại từ các đơn
-         
-         Vì Customer.debt có thể đã lệch.
-      ================================================= */
+           UPDATE CUSTOMER DEBT
+        ================================================= */
 
       if (order.customerId) {
         const customer = await Customer.findById(order.customerId).session(
@@ -893,12 +1088,9 @@ const rollbackOrderStockAsync = async (req, res) => {
         );
 
         if (customer) {
-          /* ---------------------------------------------
-             TÍNH LẠI CÔNG NỢ TỪ TOÀN BỘ ĐƠN
-          --------------------------------------------- */
-
           const customerOrders = await Order.find({
             customerId: customer._id,
+
             status: {
               $ne: "cancelled",
             },
@@ -922,20 +1114,18 @@ const rollbackOrderStockAsync = async (req, res) => {
       }
     });
 
-    /* =====================================================
-       RESPONSE
-    ===================================================== */
-
     return res.status(200).json({
       success: true,
 
-      message: "Rollback tồn kho thành công, đã xóa lịch sử xuất kho",
+      message: "Rollback tồn kho thành công, đã giảm soldQty",
 
       historyRecords: result.historyRecords,
 
       restoredItems: result.restoredItems,
 
       restoredQty: result.restoredQty,
+
+      restoredSoldQty: result.restoredSoldQty,
     });
   } catch (error) {
     console.error("rollbackOrderStockAsync:", error);
@@ -2079,4 +2269,5 @@ module.exports = {
   rollbackOrderStockAsync,
   payOrderDebtAsync,
   syncOrderVariantsAsync,
+  rebuildProductSoldQtyAsync,
 };

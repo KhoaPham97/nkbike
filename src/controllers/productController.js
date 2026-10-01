@@ -506,4 +506,83 @@ module.exports = {
       res.status(404).send({ message: error.message });
     }
   },
+  async getTopSellingProductsAsync(req, res) {
+    try {
+      let limit = Number(req.query.limit || 30);
+
+      // Giới hạn an toàn
+      if (!Number.isFinite(limit) || limit <= 0) {
+        limit = 30;
+      }
+
+      limit = Math.min(limit, 100);
+
+      const products = await Product.find({
+        soldQty: { $gt: 0 },
+      })
+        .sort({
+          soldQty: -1,
+          updated_at: -1,
+        })
+        .limit(limit)
+        .lean();
+
+      const result = products.map((product) => {
+        const soldQty = Number(product.soldQty || 0);
+        const price = Number(product.price || 0);
+
+        return {
+          ...product,
+
+          soldQty,
+          soldCount: soldQty,
+
+          // Doanh thu tạm tính
+          revenue: soldQty * price,
+        };
+      });
+
+      return res.status(200).json({
+        success: true,
+        total: result.length,
+        products: result,
+      });
+    } catch (error) {
+      console.error("❌ getTopSellingProductsAsync:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Không thể lấy danh sách sản phẩm bán chạy",
+        error: error.message,
+      });
+    }
+  },
+  // Tạm update toàn bộ sản phẩm thành rating 5 sao
+  async updateAllProductsRatingAsync(req, res) {
+    try {
+      const result = await Product.updateMany(
+        {},
+        {
+          $set: {
+            rating: 5,
+          },
+        },
+      );
+
+      return res.status(200).json({
+        success: true,
+        message: "Đã cập nhật rating = 5 cho toàn bộ sản phẩm",
+        matchedCount: result.matchedCount,
+        modifiedCount: result.modifiedCount,
+      });
+    } catch (error) {
+      console.error("❌ updateAllProductsRatingAsync:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Không thể cập nhật rating",
+        error: error.message,
+      });
+    }
+  },
 };

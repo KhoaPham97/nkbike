@@ -84,6 +84,11 @@ const productSchema = mongoose.Schema(
       enum: ["1", "2", "3"],
       default: "1",
     },
+    soldQty: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
   },
   {
     versionKey: false,
