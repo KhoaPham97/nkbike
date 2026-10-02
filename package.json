@@ -27,6 +27,7 @@
         "multer": "^2.4.0",
         "nodemon": "^2.0.12",
         "openai": "^7.23.0",
+        "socket.io": "^4.8.4",
         "stripe": "^8.170.0"
     },
     "allowScripts": {
