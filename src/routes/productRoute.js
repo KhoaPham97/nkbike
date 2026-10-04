@@ -4,7 +4,7 @@ const express = require("express");
 const productController = require("../controllers/productController");
 
 // Auth Middleware
-const auth = require("../middlewares/auth");
+const optionalAuth = require("../middlewares/optionalAuth");
 
 // Admin Access Middleware
 const adminAuth = require("../middlewares/adminAuth");
@@ -25,13 +25,21 @@ const router = express.Router();
 router.delete("/api/product/all", productController.deleteAll);
 
 // Public access
-router.get("/api/products", productController.listAllProductsAsync);
+router.get(
+  "/api/products",
+  optionalAuth,
+  productController.listAllProductsAsync,
+);
 router.get("/api/product/:id", productController.getProductAsync);
 router.get(
   "/api/products/category/:id",
   productController.getProductByCategory,
 );
-router.get("/api/products/search", productController.searchProduct);
+router.get(
+  "/api/products/search",
+  optionalAuth,
+  productController.searchProduct,
+);
 // Get Products by category
 router.get("/api/products/men", productQuery, productController.getMenProduct);
 router.get(

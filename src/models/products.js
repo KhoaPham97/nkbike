@@ -89,6 +89,10 @@ const productSchema = mongoose.Schema(
       default: 0,
       min: 0,
     },
+    isVisible: {
+      type: Boolean,
+      default: true,
+    },
   },
   {
     versionKey: false,

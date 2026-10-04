@@ -54,16 +54,25 @@ module.exports = {
       // type=1/2/3
       // => chỉ lấy đúng type
       // =====================================================
+
+      const isAdmin = req.user?.role === "admin";
+
+      const visibilityFilter = isAdmin
+        ? {}
+        : {
+            isVisible: { $ne: false },
+          };
       const filter =
         !type || type === "all"
           ? {
+              ...visibilityFilter,
               ...searchFilter,
             }
           : {
               type,
+              ...visibilityFilter,
               ...searchFilter,
             };
-
       // =====================================================
       // GET PRODUCTS
       // =====================================================
@@ -257,17 +266,39 @@ module.exports = {
   },
   async searchProduct(req, res, next) {
     try {
-      const search = req.query.q;
-      const searchArray = [{ title: { $regex: search, $options: "i" } }];
+      const search = String(req.query.q || "").trim();
 
-      const products = await Product.find({ $or: searchArray }).populate(
-        "title",
-      );
-      res.status(200).send({
+      const isAdmin = req.user?.role === "admin";
+
+      const searchArray = [
+        {
+          title: {
+            $regex: search,
+            $options: "i",
+          },
+        },
+      ];
+
+      const filter = {
+        $or: searchArray,
+        ...(isAdmin
+          ? {}
+          : {
+              isVisible: { $ne: false },
+            }),
+      };
+
+      const products = await Product.find(filter);
+
+      return res.status(200).send({
         products,
       });
     } catch (error) {
-      res.status(404).send({ message: error.message });
+      console.error("searchProduct:", error);
+
+      return res.status(500).send({
+        message: error.message,
+      });
     }
   },
 
@@ -288,6 +319,7 @@ module.exports = {
         "description",
         "variants",
         "type", // ✅ THÊM TYPE
+        "isVisible",
       ];
 
       if (!Array.isArray(req.body)) {
