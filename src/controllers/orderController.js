@@ -1687,7 +1687,6 @@ const getOrderByIdAsync = async (req, res) => {
 /* =========================================================
    LIST ORDERS
 ========================================================= */
-
 const listOrdersAsync = async (req, res) => {
   try {
     const page = Math.max(Number(req.query.page) || 1, 1);
@@ -1700,12 +1699,23 @@ const listOrdersAsync = async (req, res) => {
 
     const status = String(req.query.status || "").trim();
 
+    // Filter thời gian
+    const fromDate = String(req.query.fromDate || "").trim();
+
+    const toDate = String(req.query.toDate || "").trim();
+
     const filter = {};
 
+    // =========================
+    // FILTER STATUS
+    // =========================
     if (status) {
       filter.status = status;
     }
 
+    // =========================
+    // FILTER SEARCH
+    // =========================
     if (search) {
       filter.$or = [
         {
@@ -1714,14 +1724,12 @@ const listOrdersAsync = async (req, res) => {
             $options: "i",
           },
         },
-
         {
           customerName: {
             $regex: search,
             $options: "i",
           },
         },
-
         {
           customerPhone: {
             $regex: search,
@@ -1731,6 +1739,39 @@ const listOrdersAsync = async (req, res) => {
       ];
     }
 
+    // =========================
+    // FILTER DATE
+    // =========================
+    if (fromDate || toDate) {
+      const createdAtFilter = {};
+
+      // Từ ngày
+      if (fromDate) {
+        const startDate = new Date(`${fromDate}T00:00:00+07:00`);
+
+        if (!Number.isNaN(startDate.getTime())) {
+          createdAtFilter.$gte = startDate;
+        }
+      }
+
+      // Đến hết ngày
+      if (toDate) {
+        const endDate = new Date(`${toDate}T23:59:59.999+07:00`);
+
+        if (!Number.isNaN(endDate.getTime())) {
+          createdAtFilter.$lte = endDate;
+        }
+      }
+
+      // Chỉ thêm filter nếu có ngày hợp lệ
+      if (Object.keys(createdAtFilter).length > 0) {
+        filter.created_at = createdAtFilter;
+      }
+    }
+
+    // =========================
+    // QUERY
+    // =========================
     const [orders, total] = await Promise.all([
       Order.find(filter)
         .sort({
