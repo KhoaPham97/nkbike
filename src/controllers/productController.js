@@ -1,12 +1,52 @@
 const { Product } = require("../models/products");
 const { Category } = require("../models/category");
 
+// =====================================================
+// HELPER
+// Chuẩn hóa compatibleVehicles thành string[]
+// Hỗ trợ cả dữ liệu cũ dạng string
+// =====================================================
+const normalizeCompatibleVehicles = (value) => {
+  // Đã là array
+  if (Array.isArray(value)) {
+    return Array.from(
+      new Set(value.map((item) => String(item || "").trim()).filter(Boolean)),
+    );
+  }
+
+  // Dữ liệu cũ dạng string:
+  // "VC 2021, Liwei I5, Liwei A5"
+  if (typeof value === "string") {
+    return Array.from(
+      new Set(
+        value
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+      ),
+    );
+  }
+
+  return [];
+};
+
 module.exports = {
-  // list all product
+  // =====================================================
+  // LIST ALL PRODUCT
+  // =====================================================
   async listAllProductsAsync(req, res) {
     try {
-      const { type, search = "" } = req.query;
-
+      const { type, search = "", compatibleVehicle = "" } = req.query;
+      const compatibleVehicleFilter = compatibleVehicle.trim()
+        ? {
+            compatibleVehicles: {
+              $regex: `^${compatibleVehicle
+                .trim()
+                .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+              $options: "i",
+            },
+          }
+        : {};
       // =====================================================
       // SEARCH
       // =====================================================
@@ -47,14 +87,8 @@ module.exports = {
       const skip = (page - 1) * limit;
 
       // =====================================================
-      // FILTER
-      // type=all hoặc không truyền type
-      // => lấy tất cả sản phẩm
-      //
-      // type=1/2/3
-      // => chỉ lấy đúng type
+      // VISIBILITY
       // =====================================================
-
       const isAdmin = req.user?.role === "admin";
 
       const visibilityFilter = isAdmin
@@ -62,17 +96,24 @@ module.exports = {
         : {
             isVisible: { $ne: false },
           };
+
+      // =====================================================
+      // FILTER
+      // =====================================================
       const filter =
         !type || type === "all"
           ? {
               ...visibilityFilter,
               ...searchFilter,
+              ...compatibleVehicleFilter,
             }
           : {
               type,
               ...visibilityFilter,
               ...searchFilter,
+              ...compatibleVehicleFilter,
             };
+
       // =====================================================
       // GET PRODUCTS
       // =====================================================
@@ -108,8 +149,6 @@ module.exports = {
 
         // ===================================================
         // SORT
-        // Còn hàng trước
-        // Sau đó title A-Z
         // ===================================================
         {
           $sort: {
@@ -150,7 +189,7 @@ module.exports = {
       const hasMore = page < totalPages;
 
       // =====================================================
-      // RESPONSE GIỐNG NHAU CHO TẤT CẢ TYPE
+      // RESPONSE
       // =====================================================
       return res.status(200).json({
         products,
@@ -172,34 +211,98 @@ module.exports = {
     }
   },
 
-  // get product by Id
+  // =====================================================
+  // GET PRODUCT BY ID
+  // =====================================================
   async getProductAsync(req, res) {
     const productId = req.params.id;
 
     try {
       const foundProduct = await Product.findById(productId);
+
+      if (!foundProduct) {
+        return res.status(404).send({
+          message: "Không tìm thấy sản phẩm",
+        });
+      }
+
       res.status(200).send(foundProduct);
     } catch (error) {
-      res.status(404).send({ message: error.message });
+      res.status(404).send({
+        message: error.message,
+      });
     }
   },
+
+  // =====================================================
+  // DELETE ALL
+  // =====================================================
   async deleteAll(req, res) {
     try {
-      await Product.remove();
-      res.status(200).send({ message: "product removed" });
+      await Product.deleteMany({});
+
+      res.status(200).send({
+        message: "product removed",
+      });
     } catch (err) {
-      res.send({ message: err.message });
+      res.status(500).send({
+        message: err.message,
+      });
     }
   },
-  // create a new product
+
+  // =====================================================
+  // CREATE PRODUCT
+  // =====================================================
   async createProduct(req, res) {
     try {
       const data = req.body;
 
+      // =====================================================
+      // COMPATIBLE VEHICLES
+      // Luôn lưu dạng array
+      // =====================================================
+      const compatibleVehicles = normalizeCompatibleVehicles(
+        data.compatibleVehicles,
+      );
+
+      // =====================================================
+      // VARIANTS
+      // =====================================================
+      const variants = Array.isArray(data.variants)
+        ? data.variants.map((variant) => ({
+            name: variant.name || "",
+
+            price: String(variant.price || "0"),
+
+            defaultPrice: String(variant.defaultPrice || "0"),
+
+            qty: Number(variant.qty || 0),
+
+            // =====================================
+            // CÂN NẶNG VARIANT - KG
+            // =====================================
+            weight: Number(variant.weight || 0),
+          }))
+        : [];
+
+      // =====================================================
+      // TÍNH QTY TỪ VARIANTS
+      // =====================================================
+      const totalQty = variants.reduce((total, variant) => {
+        return total + (Number(variant.qty) || 0);
+      }, 0);
+
+      // =====================================================
+      // CREATE
+      // =====================================================
       const product = new Product({
         title: data.title,
+
         price: data.price || "0",
+
         rating: Number(data.rating || 0),
+
         originalPrice: data.originalPrice || "",
 
         thumbnail: data.thumbnail || "",
@@ -210,9 +313,9 @@ module.exports = {
 
         description: data.description || "",
 
-        qty: Number(data.qty || 0),
+        qty: totalQty,
 
-        stock: data.stock || String(data.qty || 0),
+        stock: data.stock !== undefined ? data.stock : String(totalQty),
 
         brand: data.brand || "",
 
@@ -222,22 +325,15 @@ module.exports = {
 
         type: data.type || "1",
 
-        variants: Array.isArray(data.variants)
-          ? data.variants.map((variant) => ({
-              name: variant.name || "",
+        // =================================================
+        // XE TƯƠNG THÍCH
+        // =================================================
+        compatibleVehicles,
 
-              price: String(variant.price || "0"),
-
-              defaultPrice: String(variant.defaultPrice || "0"),
-
-              qty: Number(variant.qty || 0),
-
-              // =====================================
-              // CÂN NẶNG VARIANT - KG
-              // =====================================
-              weight: Number(variant.weight || 0),
-            }))
-          : [],
+        // =================================================
+        // VARIANTS
+        // =================================================
+        variants,
 
         created_at: new Date(),
 
@@ -260,18 +356,31 @@ module.exports = {
       });
     }
   },
-  // get product
+
+  // =====================================================
+  // GET PRODUCT BY CATEGORY
+  // =====================================================
   async getProductByCategory(req, res, next) {
     try {
       const categoryId = req.params.id;
-      const products = await Product.find({ categoryId: categoryId });
+
+      const products = await Product.find({
+        categoryId: categoryId,
+      });
+
       res.status(200).send({
         products,
       });
     } catch (error) {
-      res.status(404).send({ message: error.message });
+      res.status(404).send({
+        message: error.message,
+      });
     }
   },
+
+  // =====================================================
+  // SEARCH PRODUCT
+  // =====================================================
   async searchProduct(req, res, next) {
     try {
       const search = String(req.query.q || "").trim();
@@ -289,6 +398,7 @@ module.exports = {
 
       const filter = {
         $or: searchArray,
+
         ...(isAdmin
           ? {}
           : {
@@ -310,8 +420,9 @@ module.exports = {
     }
   },
 
-  // update product
-  // update product
+  // =====================================================
+  // UPDATE PRODUCT
+  // =====================================================
   async updateProductAsync(req, res, next) {
     try {
       const allowedFields = [
@@ -329,8 +440,16 @@ module.exports = {
         "variants",
         "type",
         "isVisible",
+
+        // =================================================
+        // XE TƯƠNG THÍCH
+        // =================================================
+        "compatibleVehicles",
       ];
 
+      // =====================================================
+      // KIỂM TRA ARRAY
+      // =====================================================
       if (!Array.isArray(req.body)) {
         return res.status(400).json({
           success: false,
@@ -340,15 +459,18 @@ module.exports = {
 
       await Promise.all(
         req.body.map(async (productData) => {
+          // =================================================
+          // FIND PRODUCT
+          // =================================================
           const product = await Product.findById(productData._id);
 
           if (!product) {
             throw new Error(`Không tìm thấy sản phẩm: ${productData._id}`);
           }
 
-          // ==========================================
+          // ================================================
           // KIỂM TRA TYPE
-          // ==========================================
+          // ================================================
           if (
             productData.type !== undefined &&
             !["1", "2", "3"].includes(String(productData.type))
@@ -358,25 +480,34 @@ module.exports = {
             );
           }
 
-          // ==========================================
-          // CẬP NHẬT CÁC FIELD
-          // ==========================================
+          // ================================================
+          // CẬP NHẬT FIELD
+          // ================================================
           allowedFields.forEach((field) => {
             if (productData[field] !== undefined) {
               product[field] = productData[field];
             }
           });
 
-          // ==========================================
+          // ================================================
           // CHUẨN HÓA TYPE
-          // ==========================================
+          // ================================================
           if (productData.type !== undefined) {
             product.type = String(productData.type);
           }
 
-          // ==========================================
+          // ================================================
+          // CHUẨN HÓA XE TƯƠNG THÍCH
+          // ================================================
+          if (productData.compatibleVehicles !== undefined) {
+            product.compatibleVehicles = normalizeCompatibleVehicles(
+              productData.compatibleVehicles,
+            );
+          }
+
+          // ================================================
           // CHUẨN HÓA VARIANTS
-          // ==========================================
+          // ================================================
           if (Array.isArray(productData.variants)) {
             product.variants = productData.variants.map((variant) => ({
               name: variant.name || "",
@@ -387,27 +518,26 @@ module.exports = {
 
               qty: Number(variant.qty || 0),
 
-              // =====================================
+              // ==========================================
               // CÂN NẶNG VARIANT - KG
-              // =====================================
+              // ==========================================
               weight: Number(variant.weight || 0),
             }));
           }
 
-          // ==========================================
-          // TỰ ĐỘNG TÍNH TỔNG QTY TỪ VARIANTS
-          // ==========================================
+          // ================================================
+          // TỰ ĐỘNG TÍNH TỔNG QTY
+          // ================================================
           if (Array.isArray(product.variants)) {
             product.qty = product.variants.reduce((total, variant) => {
               return total + (Number(variant.qty) || 0);
             }, 0);
           }
 
-          // ==========================================
+          // ================================================
           // UPDATED AT
-          // ==========================================
+          // ================================================
           product.updated_at = new Date();
-
           await product.save();
         }),
       );
@@ -426,23 +556,41 @@ module.exports = {
       });
     }
   },
+
+  // =====================================================
+  // DELETE PRODUCT
+  // =====================================================
   async deleteProductAsync(req, res) {
     const productId = req.params.id;
+
     try {
       const product = await Product.findById(productId);
-      await product.remove();
 
-      res.status(200).send({ message: "Product removed" });
+      if (!product) {
+        return res.status(404).send({
+          message: "Không tìm thấy sản phẩm",
+        });
+      }
+
+      await product.deleteOne();
+
+      res.status(200).send({
+        message: "Product removed",
+      });
     } catch (err) {
-      res.send({ message: err.message });
+      res.status(500).send({
+        message: err.message,
+      });
     }
   },
 
+  // =====================================================
+  // TOP SELLING PRODUCTS
+  // =====================================================
   async getTopSellingProductsAsync(req, res) {
     try {
       let limit = Number(req.query.limit || 30);
 
-      // Giới hạn an toàn
       if (!Number.isFinite(limit) || limit <= 0) {
         limit = 30;
       }
@@ -461,15 +609,16 @@ module.exports = {
 
       const result = products.map((product) => {
         const soldQty = Number(product.soldQty || 0);
+
         const price = Number(product.price || 0);
 
         return {
           ...product,
 
           soldQty,
+
           soldCount: soldQty,
 
-          // Doanh thu tạm tính
           revenue: soldQty * price,
         };
       });
@@ -489,7 +638,10 @@ module.exports = {
       });
     }
   },
-  // Tạm update toàn bộ sản phẩm thành rating 5 sao
+
+  // =====================================================
+  // UPDATE ALL RATING
+  // =====================================================
   async updateAllProductsRatingAsync(req, res) {
     try {
       const result = await Product.updateMany(

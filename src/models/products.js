@@ -101,6 +101,11 @@ const productSchema = mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    // ============================================ // XE TƯƠNG THÍCH // ============================================
+    compatibleVehicles: {
+      type: [String],
+      default: [],
+    },
   },
   {
     versionKey: false,
@@ -108,6 +113,9 @@ const productSchema = mongoose.Schema(
 );
 // ⭐ THÊM INDEX Ở ĐÂY
 productSchema.index({ created_at: -1 });
-
+// Tăng tốc tìm sản phẩm theo xe
+productSchema.index({ compatibleVehicles: 1 });
+// Có thể kết hợp type + xe để filter nhanh
+productSchema.index({ type: 1, compatibleVehicles: 1 });
 const Product = mongoose.model("products", productSchema);
 module.exports = { productSchema, Product };

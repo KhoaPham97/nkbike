@@ -29,6 +29,8 @@ const analyticsRoutes = require("./src/routes/analyticsRoutes");
 const settingsRoutes = require("./src/routes/settings");
 const adminRoutes = require("./src/routes/admin");
 const InventoryHistory = require("./src/routes/inventoryHistoryRouter");
+const vehicleRoutes = require("./src/routes/vehicleRoutes");
+
 app.use(cors());
 
 // Connect to MongoDB
@@ -50,4 +52,6 @@ app.use("/api/analytics", analyticsRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/inventory-history", InventoryHistory);
+app.use("/api/vehicles", vehicleRoutes);
+
 module.exports = app;
