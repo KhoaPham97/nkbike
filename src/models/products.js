@@ -16,11 +16,19 @@ const variantSchema = new mongoose.Schema(
       type: String,
       default: "0",
     },
-
+    weight: {
+      type: Number,
+      default: 0,
+    },
     qty: {
       type: Number,
       default: 0,
     },
+    code: String,
+    sku: String,
+
+    thumbnail: String,
+    image: String,
   },
   { _id: false },
 );

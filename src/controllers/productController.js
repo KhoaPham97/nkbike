@@ -219,6 +219,7 @@ module.exports = {
         categoryId: data.categoryId || null,
 
         category: data.category || "",
+
         type: data.type || "1",
 
         variants: Array.isArray(data.variants)
@@ -226,13 +227,20 @@ module.exports = {
               name: variant.name || "",
 
               price: String(variant.price || "0"),
+
               defaultPrice: String(variant.defaultPrice || "0"),
 
               qty: Number(variant.qty || 0),
+
+              // =====================================
+              // CÂN NẶNG VARIANT - KG
+              // =====================================
+              weight: Number(variant.weight || 0),
             }))
           : [],
 
         created_at: new Date(),
+
         updated_at: new Date(),
       });
 
@@ -303,6 +311,7 @@ module.exports = {
   },
 
   // update product
+  // update product
   async updateProductAsync(req, res, next) {
     try {
       const allowedFields = [
@@ -318,7 +327,7 @@ module.exports = {
         "brand",
         "description",
         "variants",
-        "type", // ✅ THÊM TYPE
+        "type",
         "isVisible",
       ];
 
@@ -371,9 +380,17 @@ module.exports = {
           if (Array.isArray(productData.variants)) {
             product.variants = productData.variants.map((variant) => ({
               name: variant.name || "",
+
               price: String(variant.price || "0"),
+
               defaultPrice: String(variant.defaultPrice || "0"),
+
               qty: Number(variant.qty || 0),
+
+              // =====================================
+              // CÂN NẶNG VARIANT - KG
+              // =====================================
+              weight: Number(variant.weight || 0),
             }));
           }
 
@@ -421,123 +438,6 @@ module.exports = {
     }
   },
 
-  async getMenProduct(req, res) {
-    const searchArr = req.query.searchArr;
-    const sortArr = req.query.sortArr;
-    const pageSize = 4;
-    const page = Number(req.query.pageNumber) || 1;
-
-    try {
-      const count = await Product.countDocuments({ $and: searchArr });
-      const menProduct = await Product.find({
-        $and: searchArr,
-      })
-        .sort(sortArr)
-        .limit(pageSize)
-        .skip(pageSize * (page - 1));
-
-      res.status(200).send({
-        menProduct,
-        page,
-        pages: Math.ceil(count / pageSize),
-      });
-    } catch (error) {
-      res.status(404).send({ message: error.message });
-    }
-  },
-  async getWomenProduct(req, res) {
-    const searchArr = req.query.searchArr;
-    console.log(searchArr);
-    const sortArr = req.query.sortArr;
-    const pageSize = 4;
-    const page = Number(req.query.pageNumber) || 1;
-
-    try {
-      const count = await Product.countDocuments({ $and: searchArr });
-
-      const womenProducts = await Product.find({
-        $and: searchArr,
-      })
-        .sort(sortArr)
-        .limit(pageSize)
-        .skip(pageSize * (page - 1));
-
-      res.status(200).send({
-        womenProducts,
-        page,
-        pages: Math.ceil(count / pageSize),
-      });
-    } catch (error) {
-      res.status(404).send({ message: error.message });
-    }
-  },
-
-  async getKidsProduct(req, res) {
-    const searchArr = req.query.searchArr;
-    const sortArr = req.query.sortArr;
-    const pageSize = 4;
-    const page = Number(req.query.pageNumber) || 1;
-    try {
-      const count = await Product.countDocuments({ $and: searchArr });
-      const kidsProducts = await Product.find({
-        $and: searchArr,
-      })
-        .sort(sortArr)
-        .limit(pageSize)
-        .skip(pageSize * (page - 1));
-
-      res.status(200).send({
-        kidsProducts,
-        page,
-        pages: Math.ceil(count / pageSize),
-      });
-    } catch (error) {
-      res.status(404).send({ message: error.message });
-    }
-  },
-  async getNewArrivalsProduct(req, res) {
-    try {
-      const newArrivals = await Product.find({})
-        .sort({ createdAt: -1 })
-        .limit(3);
-      res.status(200).send(newArrivals);
-    } catch (error) {
-      res.status(404).send({ message: error.message });
-    }
-  },
-
-  async getDiscountedProduct(req, res) {
-    const searchArr = req.query.searchArr;
-    const sortArr = req.query.sortArr;
-    const pageSize = 4;
-    const page = Number(req.query.pageNumber) || 1;
-    try {
-      const count = await Product.countDocuments({ $and: searchArr });
-      const discountedProduct = await Product.find({ $and: searchArr })
-        .sort(sortArr)
-        .limit(pageSize)
-        .skip(pageSize * (page - 1));
-      res.status(200).send({
-        discountedProduct,
-        page,
-        pages: Math.ceil(count / pageSize),
-      });
-    } catch (error) {
-      res.status(404).send({ message: error.message });
-    }
-  },
-  async getProductsYouMayLike(req, res) {
-    const searchArr = req.query.searchArr;
-    try {
-      const products = await Product.find({ $and: searchArr })
-        .sort({ createdAt: -1 })
-        .limit(8);
-
-      res.status(200).send(products);
-    } catch (error) {
-      res.status(404).send({ message: error.message });
-    }
-  },
   async getTopSellingProductsAsync(req, res) {
     try {
       let limit = Number(req.query.limit || 30);

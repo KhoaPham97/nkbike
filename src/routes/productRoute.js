@@ -40,33 +40,6 @@ router.get(
   optionalAuth,
   productController.searchProduct,
 );
-// Get Products by category
-router.get("/api/products/men", productQuery, productController.getMenProduct);
-router.get(
-  "/api/products/women",
-  productQuery,
-  productController.getWomenProduct,
-);
-router.get(
-  "/api/products/discount",
-  productQuery,
-  productController.getDiscountedProduct,
-);
-router.get(
-  "/api/products/kids",
-  productQuery,
-  productController.getKidsProduct,
-);
-router.get(
-  "/api/products/new-arrivals",
-  productController.getNewArrivalsProduct,
-);
-
-router.get(
-  "/api/products-you-may-like",
-  productsYouMayLike,
-  productController.getProductsYouMayLike,
-);
 
 // Admin access only
 router.post("/api/products", productController.createProduct);
