@@ -561,25 +561,29 @@ module.exports = {
   // DELETE PRODUCT
   // =====================================================
   async deleteProductAsync(req, res) {
-    const productId = req.params.id;
-
     try {
-      const product = await Product.findById(productId);
+      const { id } = req.params;
+
+      const product = await Product.findById(id);
 
       if (!product) {
-        return res.status(404).send({
+        return res.status(404).json({
           message: "Không tìm thấy sản phẩm",
         });
       }
 
-      await product.deleteOne();
+      await Product.findByIdAndDelete(id);
 
-      res.status(200).send({
-        message: "Product removed",
+      return res.json({
+        message: "Xóa sản phẩm thành công",
+        productId: id,
       });
-    } catch (err) {
-      res.status(500).send({
-        message: err.message,
+    } catch (error) {
+      console.error("Delete product error:", error);
+
+      return res.status(500).json({
+        message: "Không thể xóa sản phẩm",
+        error: error.message,
       });
     }
   },
