@@ -12,16 +12,6 @@ const setupChatSocket = require("./src/socket/chatSocket");
 // ==============================
 // ENV CHECK
 // ==============================
-
-console.log("NODE_ENV:", process.env.NODE_ENV);
-
-console.log("JWT_SECRET:", process.env.JWT_SECRET ? "ĐÃ CÓ" : "KHÔNG CÓ");
-
-console.log(
-  "OPENAI_API_KEY:",
-  process.env.OPENAI_API_KEY ? "ĐÃ CÓ KEY" : "KHÔNG CÓ KEY",
-);
-
 // ==============================
 // HTTP SERVER
 // ==============================
@@ -126,8 +116,4 @@ server.listen(PORT, () => {
   console.log(
     `Server has started successfully in ${process.env.NODE_ENV} mode at port ${PORT}`,
   );
-
-  console.log(`Server running on port ${PORT}`);
-
-  console.log(`Socket.IO is ready`);
 });

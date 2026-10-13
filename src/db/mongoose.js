@@ -5,9 +5,5 @@ const db =
 
 mongoose
   .connect(db)
-  .then(() => {
-    console.log("Successfully connected to database");
-  })
-  .catch((error) => {
-    console.log("Could not connect to database", error);
-  });
+  .then(() => {})
+  .catch((error) => {});

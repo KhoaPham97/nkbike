@@ -10,13 +10,6 @@ module.exports = {
     try {
       const { username, password } = req.body;
 
-      console.log("=================================");
-      console.log("ADMIN LOGIN");
-      console.log("Username:", username);
-      console.log("Password:", password ? "******" : "EMPTY");
-      console.log("JWT_SECRET:", process.env.JWT_SECRET ? "OK" : "UNDEFINED");
-      console.log("=================================");
-
       // -------------------------------------------------------
       // Validate
       // -------------------------------------------------------
@@ -36,18 +29,12 @@ module.exports = {
       });
 
       if (!foundUser) {
-        console.log("LOGIN RESULT: USER NOT FOUND");
-
         return res.status(401).json({
           success: false,
           auth: false,
           message: "Tài khoản hoặc mật khẩu không đúng",
         });
       }
-
-      console.log("User found:", foundUser.username);
-      console.log("Role:", foundUser.role);
-      console.log("MemberShip:", foundUser.memberShip);
 
       // -------------------------------------------------------
       // Kiểm tra password
@@ -56,8 +43,6 @@ module.exports = {
         password,
         foundUser.password,
       );
-
-      console.log("Password valid:", isPasswordValid);
 
       if (!isPasswordValid) {
         return res.status(401).json({
@@ -72,8 +57,6 @@ module.exports = {
       // -------------------------------------------------------
       const isAdmin =
         foundUser.role === "admin" || foundUser.memberShip === "admin";
-
-      console.log("Is admin:", isAdmin);
 
       if (!isAdmin) {
         return res.status(403).json({
@@ -111,8 +94,6 @@ module.exports = {
           expiresIn: "7d",
         },
       );
-
-      console.log("JWT created: OK");
 
       // -------------------------------------------------------
       // Lưu token vào database

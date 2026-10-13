@@ -5,12 +5,7 @@ const auth = async (req, res, next) => {
   try {
     const header = req.header("Authorization");
 
-    console.log("========== AUTH ==========");
-    console.log("Authorization:", header);
-
     if (!header || !header.startsWith("Bearer ")) {
-      console.log("❌ Missing Bearer token");
-
       return res.status(401).json({
         success: false,
         message: "Missing Authorization Bearer token",
@@ -18,8 +13,6 @@ const auth = async (req, res, next) => {
     }
 
     const token = header.replace("Bearer ", "").trim();
-
-    console.log("Token:", token ? "FOUND" : "EMPTY");
 
     if (!token) {
       return res.status(401).json({
@@ -34,11 +27,7 @@ const auth = async (req, res, next) => {
 
     const tokenPayload = await verifyToken(token, process.env.JWT_SECRET);
 
-    console.log("Token payload:", tokenPayload);
-
     if (!tokenPayload?.id) {
-      console.log("❌ Token không có id");
-
       return res.status(401).json({
         success: false,
         message: "Invalid token payload",
@@ -54,11 +43,7 @@ const auth = async (req, res, next) => {
       "tokens.token": token,
     });
 
-    console.log("User found:", !!user);
-
     if (!user) {
-      console.log("❌ User không tồn tại hoặc token không nằm trong tokens");
-
       return res.status(401).json({
         success: false,
         message: "User not logged in or unauthorized",
@@ -72,10 +57,6 @@ const auth = async (req, res, next) => {
     req.token = token;
     req.user = user;
     req.tokenPayload = tokenPayload;
-
-    console.log("✅ AUTH SUCCESS");
-    console.log("User:", user._id);
-    console.log("Role:", user.role);
 
     next();
   } catch (err) {

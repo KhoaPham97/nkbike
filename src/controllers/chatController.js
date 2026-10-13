@@ -96,7 +96,7 @@ const getAdminConversations = async (req, res) => {
     if (req.query.status === "open" || req.query.status === "closed") {
       filter.status = req.query.status;
     }
-    console.log("GET ADMIN CONVERSATIONS:", { filter, page, limit });
+
     // ========================================== // LẤY CONVERSATIONS // ==========================================
     const [conversations, total] = await Promise.all([
       ChatConversation.find(filter)
@@ -145,13 +145,11 @@ const getAdminConversations = async (req, res) => {
     });
   } catch (error) {
     console.error("❌ getAdminConversations:", error);
-    return res
-      .status(500)
-      .json({
-        success: false,
-        message: "Không thể lấy danh sách chat",
-        error: error.message,
-      });
+    return res.status(500).json({
+      success: false,
+      message: "Không thể lấy danh sách chat",
+      error: error.message,
+    });
   }
 };
 // ===============================

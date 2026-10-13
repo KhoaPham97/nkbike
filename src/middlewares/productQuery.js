@@ -10,7 +10,7 @@ const productQuery = (req, res, next) => {
     discount,
     currency,
   } = req.query;
-  console.log(req.query);
+
   let sortArr = [];
   let OrArr = [];
 

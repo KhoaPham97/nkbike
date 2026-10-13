@@ -10,9 +10,6 @@ const uploadImageMiddleware = async (req, res, next) => {
         upload_preset: "Dev",
       });
 
-      console.log("UPLOAD IMAGE MIDDLEWARE");
-      console.log(uploadResponse);
-
       images.push(uploadResponse.public_id);
     }
 
@@ -33,7 +30,7 @@ const uploadImageBase64 = async (req, res, next) => {
     fs.readFile("image.png", (err, data) => {
       if (err) throw err;
       let base64Image = Buffer.from(data, "binary").toString("base64");
-      console.log(base64Image);
+
       req.body.image = base64Image;
     });
 
@@ -44,23 +41,17 @@ const uploadImageBase64 = async (req, res, next) => {
 };
 const editMiddleware = async (req, res, next) => {
   // we need a deleted array and the new array
-  console.log(req.body.newImages);
-  console.log(req.body.removedImages);
-  console.log(req.body.image);
+
   const unchangedImages = req.body.image;
   const newImages = req.body.newImages;
   const imagesToDelete = req.body.removedImages;
-  console.log("New Images", newImages);
-  console.log("Image to remove", imagesToDelete);
-  let newPublicIds = [];
 
-  console.log(imagesToDelete.length, newImages.length);
+  let newPublicIds = [];
 
   try {
     // to remove the old images
     for (let i = 0; i < imagesToDelete.length; i++) {
       const response = await cloudinary.uploader.destroy(imagesToDelete[i]);
-      console.log(response);
     }
 
     // to add the new once
@@ -72,7 +63,7 @@ const editMiddleware = async (req, res, next) => {
     }
 
     req.body.image = unchangedImages.concat(newPublicIds);
-    // console.log(unchangedImages, 'here')
+    //
     next();
   } catch (error) {
     res.status(500).send({ message: "Failed to update the images" });
@@ -84,14 +75,13 @@ const getImageForStripeCheckoutMiddleware = async (req, res, next) => {
 
   try {
     for (let i = 0; i < line_items.length; i++) {
-      console.log(line_items[i].price_data.product_data.images);
       const { url } = await cloudinary.api.resource(
-        line_items[i].price_data.product_data.images
+        line_items[i].price_data.product_data.images,
       );
       line_items[i].price_data.product_data.images = [url];
     }
     req.body.line_items = line_items;
-    //console.log(req.body.line_items[0].price_data.product_data)
+    //
     next();
   } catch (error) {
     res.status(400).send({ message: "Failed to get images" });

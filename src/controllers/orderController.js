@@ -35,10 +35,6 @@ const ALLOWED_PAYMENT_METHODS = ["cash", "transfer", "cod", "debt"];
 
 const rebuildProductSoldQtyAsync = async (req, res) => {
   try {
-    console.log("========================================");
-    console.log("REBUILD PRODUCT SOLD QTY");
-    console.log("========================================");
-
     /* =====================================================
        1. RESET TẤT CẢ soldQty VỀ 0
     ===================================================== */
@@ -2237,10 +2233,6 @@ const syncOrderVariantsAsync = async (req, res) => {
       );
 
       if (!variant) {
-        console.log(
-          `Không tìm thấy variant "${variantName}" trong product ${item.productId}`,
-        );
-
         skippedItems++;
         continue;
       }
@@ -2286,6 +2278,168 @@ const syncOrderVariantsAsync = async (req, res) => {
     });
   }
 };
+
+/* =========================================================
+   CUSTOMER PURCHASE STATISTICS
+   GET /api/orders/customer-purchase-stats
+
+   - Nhóm theo customerName
+   - Loại trừ đơn cancelled
+   - Có lọc ngày, tìm kiếm và phân trang khách hàng
+========================================================= */
+
+const getCustomerPurchaseStatsAsync = async (req, res) => {
+  try {
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 20));
+    const search = String(req.query.search || "")
+      .trim()
+      .toLowerCase();
+
+    // Loại bỏ đơn hàng đã hủy
+    const orders = await Order.find({
+      status: { $ne: "cancelled" },
+    })
+      .sort({ created_at: -1 })
+      .lean();
+
+    const customersMap = new Map();
+
+    for (const order of orders) {
+      const customerName = String(order.customerName || "Khách lẻ").trim();
+      const customerPhone = String(order.customerPhone || "").trim();
+
+      // Ưu tiên số điện thoại để phân biệt khách trùng tên
+      const customerKey = customerPhone
+        ? `phone:${customerPhone}`
+        : `name:${customerName.toLowerCase()}`;
+
+      if (!customersMap.has(customerKey)) {
+        customersMap.set(customerKey, {
+          customerName,
+          customerPhone,
+          orderCount: 0,
+          totalQty: 0,
+          totalSpent: 0,
+          totalPaid: 0,
+          totalDebt: 0,
+          lastOrderAt: null,
+          productsMap: new Map(),
+        });
+      }
+
+      const customer = customersMap.get(customerKey);
+
+      customer.orderCount += 1;
+      customer.totalSpent += Number(order.totalAmount) || 0;
+      customer.totalPaid += Number(order.paidAmount) || 0;
+      customer.totalDebt += Number(order.debt) || 0;
+
+      const orderDate = order.created_at || order.createdAt;
+      if (
+        orderDate &&
+        (!customer.lastOrderAt ||
+          new Date(orderDate) > new Date(customer.lastOrderAt))
+      ) {
+        customer.lastOrderAt = orderDate;
+      }
+
+      // Tổng hợp các sản phẩm trong từng đơn hàng
+      for (const item of order.items || []) {
+        const qty = Number(item.qty) || 0;
+        const price = Number(item.price) || 0;
+        const productTitle = item.productTitle || item.title || "Sản phẩm";
+        const productCode = item.productCode || "";
+        const variantName = item.variantName || "";
+
+        const productKey = [
+          String(item.productId || ""),
+          productCode,
+          productTitle,
+          variantName,
+        ].join("|");
+
+        if (!customer.productsMap.has(productKey)) {
+          customer.productsMap.set(productKey, {
+            productId: item.productId || null,
+            productTitle,
+            productCode,
+            variantName,
+            totalQty: 0,
+            totalAmount: 0,
+            orderCount: 0,
+          });
+        }
+
+        const product = customer.productsMap.get(productKey);
+        product.totalQty += qty;
+        product.totalAmount += Number(item.total) || price * qty;
+        product.orderCount += 1;
+
+        customer.totalQty += qty;
+      }
+    }
+
+    let customers = Array.from(customersMap.values()).map((customer) => {
+      const products = Array.from(customer.productsMap.values());
+
+      return {
+        customerName: customer.customerName,
+        customerPhone: customer.customerPhone,
+        orderCount: customer.orderCount,
+        totalQty: customer.totalQty,
+        totalSpent: customer.totalSpent,
+        totalPaid: customer.totalPaid,
+        totalDebt: customer.totalDebt,
+        lastOrderAt: customer.lastOrderAt,
+
+        // FE sử dụng trường này để hiển thị sản phẩm
+        products,
+
+        // Có thể dùng nếu FE đang đọc productDetails
+        productDetails: products,
+      };
+    });
+
+    if (search) {
+      customers = customers.filter(
+        (customer) =>
+          customer.customerName.toLowerCase().includes(search) ||
+          customer.customerPhone.toLowerCase().includes(search),
+      );
+    }
+
+    const totalCustomers = customers.length;
+    const totalPages = Math.ceil(totalCustomers / limit);
+    const data = customers.slice((page - 1) * limit, page * limit);
+
+    return res.status(200).json({
+      success: true,
+      data,
+      pagination: {
+        page,
+        limit,
+        totalCustomers,
+        totalPages,
+        hasMore: page < totalPages,
+      },
+    });
+  } catch (error) {
+    console.error("getCustomerPurchaseStatsAsync error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể thống kê sản phẩm khách hàng đã mua",
+      error: error.message,
+    });
+  }
+};
+
+module.exports = {
+  // Giữ nguyên các hàm export hiện có
+  getCustomerPurchaseStatsAsync,
+};
+
 /* =========================================================
    EXPORT
 ========================================================= */
@@ -2311,4 +2465,7 @@ module.exports = {
   payOrderDebtAsync,
   syncOrderVariantsAsync,
   rebuildProductSoldQtyAsync,
+
+  // Thống kê mua hàng khách hàng
+  getCustomerPurchaseStatsAsync,
 };

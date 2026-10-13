@@ -1,7 +1,5 @@
 const setupChatSocket = (io) => {
   io.on("connection", (socket) => {
-    console.log("Socket connected:", socket.id);
-
     // Join conversation
     socket.on("chat:join", ({ conversationId }) => {
       if (!conversationId) return;
@@ -9,8 +7,6 @@ const setupChatSocket = (io) => {
       const room = `conversation:${conversationId}`;
 
       socket.join(room);
-
-      console.log(`Socket ${socket.id} joined ${room}`);
     });
 
     // Leave conversation
@@ -42,9 +38,7 @@ const setupChatSocket = (io) => {
       });
     });
 
-    socket.on("disconnect", () => {
-      console.log("Socket disconnected:", socket.id);
-    });
+    socket.on("disconnect", () => {});
   });
 };
 

@@ -109,8 +109,6 @@ const customerSchema = new mongoose.Schema(
 
 customerSchema.index({ phone: 1 });
 customerSchema.index({ email: 1 });
-customerSchema.index({ username: 1 });
-customerSchema.index({ status: 1 });
 customerSchema.index({ created_at: -1 });
 
 // =========================
