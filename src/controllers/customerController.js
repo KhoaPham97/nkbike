@@ -1324,7 +1324,86 @@ const loginCustomerAsync = async (req, res) => {
       error: error.message,
     });
   }
+}; /**
+ * Đối soát công nợ cho toàn bộ khách hàng từ đơn hàng.
+ * Không sửa dữ liệu đơn hàng và không tác động kho.
+ */
+const updateAllCustomersDebtAsync = async () => {
+  const session = await mongoose.startSession();
+
+  try {
+    const customers = await Customer.find({}).select("_id name").lean();
+
+    let updatedCount = 0;
+    const errors = [];
+
+    for (const customer of customers) {
+      try {
+        // Hỗ trợ cả customer và customerId.
+        // Nếu schema của bạn chỉ dùng một trường, hãy giữ đúng trường đó.
+        const orders = await Order.find({
+          $or: [{ customer: customer._id }, { customerId: customer._id }],
+          status: { $ne: "cancelled" },
+        })
+          .select("totalAmount total paidAmount status")
+          .lean();
+
+        let totalSpent = 0;
+        let totalPaid = 0;
+        let debt = 0;
+        let totalOrders = 0;
+
+        for (const order of orders) {
+          const totalAmount = Number(order.totalAmount ?? order.total ?? 0);
+          const paidAmount = Number(order.paidAmount ?? 0);
+
+          totalSpent += totalAmount;
+          totalPaid += paidAmount;
+          debt += totalAmount - paidAmount;
+          totalOrders += 1;
+        }
+
+        // Làm tròn đến đơn vị đồng.
+        totalSpent = Math.round(totalSpent);
+        totalPaid = Math.round(totalPaid);
+        debt = Math.round(debt);
+
+        await Customer.updateOne(
+          { _id: customer._id },
+          {
+            $set: {
+              totalOrders,
+              totalSpent,
+              debt,
+            },
+          },
+        );
+
+        updatedCount++;
+      } catch (error) {
+        errors.push({
+          customerId: String(customer._id),
+          name: customer.name,
+          error: error.message,
+        });
+      }
+    }
+
+    return {
+      success: errors.length === 0,
+      message: "Đã đối soát công nợ khách hàng",
+      totalCustomers: customers.length,
+      updatedCount,
+      failedCount: errors.length,
+      errors,
+    };
+  } catch (error) {
+    throw new Error(`Lỗi đối soát công nợ: ${error.message}`);
+  } finally {
+    await session.endSession();
+  }
 };
+
 // =====================================================
 // EXPORT
 // =====================================================
@@ -1340,4 +1419,5 @@ module.exports = {
   getCustomerOrdersAsync,
   updateMultipleCustomersAsync,
   loginCustomerAsync,
+  updateAllCustomersDebtAsync,
 };
