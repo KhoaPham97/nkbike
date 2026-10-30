@@ -29,6 +29,13 @@ const variantSchema = new mongoose.Schema(
 
     thumbnail: String,
     image: String,
+    // Số lượng sản phẩm trong 1 kiện
+
+    packageQuantity: {
+      type: Number,
+      default: 1,
+      min: 1,
+    },
   },
   { _id: false },
 );

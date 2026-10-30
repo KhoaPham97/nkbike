@@ -283,6 +283,7 @@ module.exports = {
             // CÂN NẶNG VARIANT - KG
             // =====================================
             weight: Number(variant.weight || 0),
+            packageQuantity: Number(variant.packageQuantity || 1),
           }))
         : [];
 
@@ -522,6 +523,7 @@ module.exports = {
               // CÂN NẶNG VARIANT - KG
               // ==========================================
               weight: Number(variant.weight || 0),
+              packageQuantity: Number(variant.packageQuantity || 1),
             }));
           }
 

@@ -1253,7 +1253,7 @@ const loginCustomerAsync = async (req, res) => {
       },
       JWT_SECRET,
       {
-        expiresIn: "30d",
+        expiresIn: "8h",
       },
     );
 

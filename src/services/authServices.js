@@ -16,7 +16,7 @@ const generateToken = async (user) => {
     },
     secret,
     {
-      expiresIn: "7d",
+      expiresIn: "8h",
     },
   );
 
