@@ -27,5 +27,5 @@ router.get(
   adminAuth,
   inventoryController.getInventoryReceiptDetailAsync,
 );
-
+router.post("/sync-zero-costs", auth, inventoryController.syncZeroCost);
 module.exports = router;

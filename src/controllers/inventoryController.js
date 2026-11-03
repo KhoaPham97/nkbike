@@ -170,7 +170,6 @@ const createInventoryReceiptAsync = async (req, res) => {
       // ===============================================
 
       const receiptItems = [];
-      let batchSequence = 0;
 
       let totalQty = 0;
       let totalAmount = 0;
@@ -253,30 +252,8 @@ const createInventoryReceiptAsync = async (req, res) => {
           });
 
           // -------------------------------------------
-          // INVENTORY BATCH + HISTORY
+          // INVENTORY HISTORY
           // -------------------------------------------
-
-          // TẠO LÔ RIÊNG CHO DÒNG NHẬP NÀY
-          batchSequence += 1;
-          const batchCode = `${receiptCode}-${String(batchSequence).padStart(2, "0")}`;
-          const [batch] = await InventoryBatch.create(
-            [{
-              batchCode,
-              productId: product._id,
-              productTitle: product.title || "",
-              productCode,
-              variantName,
-              importDate: new Date(),
-              importQty: qty,
-              remainingQty: qty,
-              unitCost,
-              source: "receipt",
-              sourceConfidence: "recorded",
-              note: note || `Nhập theo phiếu ${receiptCode}`,
-              createdBy: req.user?._id || null,
-            }],
-            { session },
-          );
 
           await InventoryHistory.create(
             [
@@ -296,10 +273,6 @@ const createInventoryReceiptAsync = async (req, res) => {
                 productCode,
 
                 variantName,
-
-                batchId: batch._id,
-                batchCode: batch.batchCode,
-                unitCost,
 
                 qty,
 
@@ -355,30 +328,8 @@ const createInventoryReceiptAsync = async (req, res) => {
           });
 
           // -------------------------------------------
-          // INVENTORY BATCH + HISTORY
+          // INVENTORY HISTORY
           // -------------------------------------------
-
-          // TẠO LÔ RIÊNG CHO DÒNG NHẬP NÀY
-          batchSequence += 1;
-          const batchCode = `${receiptCode}-${String(batchSequence).padStart(2, "0")}`;
-          const [batch] = await InventoryBatch.create(
-            [{
-              batchCode,
-              productId: product._id,
-              productTitle: product.title || "",
-              productCode,
-              variantName,
-              importDate: new Date(),
-              importQty: qty,
-              remainingQty: qty,
-              unitCost,
-              source: "receipt",
-              sourceConfidence: "recorded",
-              note: note || `Nhập theo phiếu ${receiptCode}`,
-              createdBy: req.user?._id || null,
-            }],
-            { session },
-          );
 
           await InventoryHistory.create(
             [
@@ -398,10 +349,6 @@ const createInventoryReceiptAsync = async (req, res) => {
                 productCode,
 
                 variantName: "",
-
-                batchId: batch._id,
-                batchCode: batch.batchCode,
-                unitCost,
 
                 qty,
 
@@ -457,13 +404,6 @@ const createInventoryReceiptAsync = async (req, res) => {
       );
 
       receipt = created[0];
-
-      // GẮN ID PHIẾU NHẬP VÀO CÁC LÔ VỪA TẠO
-      await InventoryBatch.updateMany(
-        { batchCode: { $regex: `^${receiptCode}-` } },
-        { $set: { importReceiptId: receipt._id } },
-        { session },
-      );
 
       // ===============================================
       // UPDATE HISTORY REFERENCE ID
@@ -658,168 +598,152 @@ const getInventoryReceiptDetailAsync = async (req, res) => {
     });
   }
 };
-const rebuildInventoryHistoryAsync = async (req, res) => {
-  const session = await mongoose.startSession();
 
+// ======================================================
+// ĐỒNG BỘ GIÁ VỐN VÀ TÍNH LẠI TỔNG TIỀN PHIẾU NHẬP
+// ======================================================
+const syncZeroCost = async (req, res) => {
   try {
-    const { items = [], replace = false } = req.body || {};
+    // 1. Lấy tất cả phiếu nhập chưa bị hủy
+    const receipts = await InventoryReceipt.find({
+      status: { $ne: "cancelled" },
+    }).lean();
 
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Danh sách inventory không hợp lệ",
+    if (!receipts.length) {
+      return res.json({
+        success: true,
+        message: "Không có phiếu nhập cần xử lý",
+        data: {
+          totalReceipts: 0,
+          updatedReceipts: 0,
+          updatedItems: 0,
+          skippedItems: 0,
+        },
       });
     }
 
-    // =====================================================
-    // VALIDATE DATA
-    // =====================================================
+    // 2. Lấy danh sách productId
+    const productIds = [
+      ...new Set(
+        receipts.flatMap((receipt) =>
+          (receipt.items || []).map((item) => String(item.productId)),
+        ),
+      ),
+    ];
 
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
+    // 3. Lấy dữ liệu sản phẩm và giá vốn hiện tại
+    const products = await Product.find({
+      _id: { $in: productIds },
+    })
+      .select("variants")
+      .lean();
 
-      if (!item.type) {
-        throw new Error(`Phần tử ${i + 1} thiếu type`);
-      }
+    // 4. Tạo bảng giá vốn theo productId + variantName
+    const costMap = new Map();
 
-      if (
-        !["import", "export", "adjustment", "order", "cancel"].includes(
-          item.type,
-        )
-      ) {
-        throw new Error(`Phần tử ${i + 1} có type không hợp lệ: ${item.type}`);
-      }
+    products.forEach((product) => {
+      (product.variants || []).forEach((variant) => {
+        const variantName = String(variant.name || "")
+          .trim()
+          .toLowerCase();
 
-      if (!item.productId) {
-        throw new Error(`Phần tử ${i + 1} thiếu productId`);
-      }
+        const key = `${String(product._id)}_${variantName}`;
 
-      if (!mongoose.Types.ObjectId.isValid(item.productId)) {
-        throw new Error(
-          `productId không hợp lệ tại phần tử ${i + 1}: ${item.productId}`,
-        );
-      }
+        costMap.set(key, Number(variant.unitCost) || 0);
+      });
+    });
 
-      if (!Number.isFinite(Number(item.qty))) {
-        throw new Error(`qty không hợp lệ tại phần tử ${i + 1}`);
-      }
-    }
+    // 5. Tính lại từng phiếu nhập
+    const operations = [];
 
-    let created = 0;
-    let deleted = 0;
+    let updatedItems = 0;
+    let skippedItems = 0;
+    let updatedReceipts = 0;
 
-    await session.withTransaction(async () => {
-      // =====================================================
-      // REMOVE OLD HISTORY
-      // =====================================================
+    for (const receipt of receipts) {
+      const items = (receipt.items || []).map((item) => ({
+        productId: item.productId,
+        productTitle: item.productTitle,
+        variantName: item.variantName,
+        qty: Number(item.qty) || 0,
+        unitCost: Number(item.unitCost) || 0,
+        total: Number(item.total) || 0,
+      }));
 
-      if (replace === true) {
-        const referenceCodes = [
-          ...new Set(
-            items
-              .map((item) => String(item.referenceCode || "").trim())
-              .filter(Boolean),
-          ),
-        ];
+      // Đồng bộ giá vốn nếu đang bằng 0
+      for (const item of items) {
+        if (item.unitCost <= 0) {
+          const variantName = String(item.variantName || "")
+            .trim()
+            .toLowerCase();
 
-        if (referenceCodes.length > 0) {
-          const deleteResult = await InventoryHistory.deleteMany(
-            {
-              referenceCode: {
-                $in: referenceCodes,
-              },
-            },
-            { session },
-          );
+          const key = `${String(item.productId)}_${variantName}`;
 
-          deleted = deleteResult.deletedCount || 0;
+          const sourceCost = costMap.get(key) || 0;
+
+          if (sourceCost > 0) {
+            item.unitCost = sourceCost;
+            updatedItems++;
+          } else {
+            skippedItems++;
+          }
         }
       }
 
-      // =====================================================
-      // PREPARE DATA
-      // =====================================================
+      // Tính lại thành tiền từng sản phẩm
+      let totalAmount = 0;
 
-      const histories = items.map((item) => ({
-        type: item.type,
-
-        referenceType:
-          item.referenceType ||
-          (item.type === "order" ? "Order" : "InventoryReceipt"),
-
-        referenceId:
-          item.referenceId && mongoose.Types.ObjectId.isValid(item.referenceId)
-            ? item.referenceId
-            : null,
-
-        referenceCode: item.referenceCode || "",
-
-        productId: item.productId,
-
-        productTitle: item.productTitle || "",
-
-        productCode: item.productCode || "",
-
-        variantName: item.variantName || "",
-
-        qty: Number(item.qty),
-
-        beforeQty: Number(item.beforeQty || 0),
-
-        afterQty: Number(item.afterQty || 0),
-
-        note: item.note || "",
-
-        createdBy:
-          item.createdBy && mongoose.Types.ObjectId.isValid(item.createdBy)
-            ? item.createdBy
-            : req.user?._id || null,
-
-        rollback: item.rollback === true,
-
-        rollback_at: item.rollback_at ? new Date(item.rollback_at) : null,
-
-        rollbackBy:
-          item.rollbackBy && mongoose.Types.ObjectId.isValid(item.rollbackBy)
-            ? item.rollbackBy
-            : null,
-
-        created_at: item.created_at ? new Date(item.created_at) : new Date(),
-      }));
-
-      // =====================================================
-      // INSERT
-      // =====================================================
-
-      const result = await InventoryHistory.insertMany(histories, {
-        session,
-        ordered: true,
+      items.forEach((item) => {
+        item.total = item.unitCost * item.qty;
+        totalAmount += item.total;
       });
 
-      created = result.length;
-    });
+      // Cập nhật phiếu nhập
+      operations.push({
+        updateOne: {
+          filter: { _id: receipt._id },
+          update: {
+            $set: {
+              items,
+              totalAmount,
+              updated_at: new Date(),
+            },
+          },
+        },
+      });
 
-    return res.status(200).json({
+      updatedReceipts++;
+    }
+
+    // 6. Ghi dữ liệu xuống MongoDB
+    if (operations.length) {
+      await InventoryReceipt.bulkWrite(operations);
+    }
+
+    return res.json({
       success: true,
-      message: "Tạo lại inventory thành công",
-      deleted,
-      created,
-      total: items.length,
+      message: "Đã đồng bộ giá vốn và tính lại tổng tiền phiếu nhập",
+      data: {
+        totalReceipts: receipts.length,
+        updatedReceipts,
+        updatedItems,
+        skippedItems,
+        currency: "CNY",
+      },
     });
   } catch (error) {
-    console.error("rebuildInventoryHistoryAsync:", error);
+    console.error("syncZeroCost error:", error);
 
-    return res.status(400).json({
+    return res.status(500).json({
       success: false,
-      message: error?.message || "Không thể tạo lại inventory",
+      message: "Lỗi đồng bộ giá vốn và tổng tiền phiếu nhập",
+      error: error.message,
     });
-  } finally {
-    await session.endSession();
   }
 };
 module.exports = {
   createInventoryReceiptAsync,
   listInventoryReceiptsAsync,
   getInventoryReceiptDetailAsync,
-  rebuildInventoryHistoryAsync,
+  syncZeroCost,
 };

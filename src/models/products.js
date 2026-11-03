@@ -16,6 +16,12 @@ const variantSchema = new mongoose.Schema(
       type: String,
       default: "0",
     },
+    // Giá vốn chuẩn VND, dùng thống nhất cho báo cáo lợi nhuận
+    unitCost: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     weight: {
       type: Number,
       default: 0,

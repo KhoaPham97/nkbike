@@ -277,6 +277,8 @@ module.exports = {
 
             defaultPrice: String(variant.defaultPrice || "0"),
 
+            unitCost: Math.max(0, Number(variant.unitCost) || 0),
+
             qty: Number(variant.qty || 0),
 
             // =====================================
@@ -510,12 +512,18 @@ module.exports = {
           // CHUẨN HÓA VARIANTS
           // ================================================
           if (Array.isArray(productData.variants)) {
-            product.variants = productData.variants.map((variant) => ({
+            product.variants = productData.variants.map((variant, index) => ({
               name: variant.name || "",
 
               price: String(variant.price || "0"),
 
               defaultPrice: String(variant.defaultPrice || "0"),
+
+              // Giữ giá vốn hiện tại nếu FE cũ chưa gửi unitCost
+              unitCost:
+                variant.unitCost !== undefined
+                  ? Math.max(0, Number(variant.unitCost) || 0)
+                  : Number(product.variants?.[index]?.unitCost || 0),
 
               qty: Number(variant.qty || 0),
 
