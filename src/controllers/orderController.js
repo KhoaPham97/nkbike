@@ -3,9 +3,12 @@ const mongoose = require("mongoose");
 const Order = require("../models/orders");
 const Customer = require("../models/customer");
 const { Product } = require("../models/products");
-
+const {
+  emitStockNotification,
+} = require("../services/stockNotificationService");
 // inventoryHistory.js export trực tiếp model
 const InventoryHistory = require("../models/inventoryHistory");
+const InventoryBatch = require("../models/InventoryBatch");
 
 /* =========================================================
    CONSTANT
@@ -352,7 +355,366 @@ const buildInventoryHistory = ({
     created_at: new Date(),
   };
 };
+/* =========================================================
+   FIFO: PHÂN BỔ LÔ VÀ TRỪ KHO
+========================================================= */
 
+const deductOrderStockFIFO = async ({ order, session, userId }) => {
+  const productCache = new Map();
+  const historyDocuments = [];
+
+  for (const item of order.items || []) {
+    const qty = toNumber(item.qty);
+    const variantName = String(item.variantName || "").trim();
+
+    if (!item.productId || qty <= 0) {
+      throw new Error(
+        `Sản phẩm "${item.productTitle}" có số lượng không hợp lệ`,
+      );
+    }
+
+    const productId = String(item.productId);
+
+    let product = productCache.get(productId);
+
+    if (!product) {
+      product = await Product.findById(item.productId).session(session);
+
+      if (!product) {
+        throw new Error(`Không tìm thấy sản phẩm "${item.productTitle}"`);
+      }
+
+      productCache.set(productId, product);
+    }
+
+    let variant = null;
+
+    if (variantName) {
+      variant = findVariant(product, variantName);
+
+      if (!variant) {
+        throw new Error(
+          `Không tìm thấy phân loại "${variantName}" của sản phẩm "${product.title}"`,
+        );
+      }
+
+      if (toNumber(variant.qty) < qty) {
+        throw new Error(
+          `Phân loại "${variantName}" chỉ còn ${variant.qty}, cần xuất ${qty}`,
+        );
+      }
+    } else if (getVariants(product).length > 0) {
+      throw new Error(
+        `Sản phẩm "${product.title}" có phân loại nhưng đơn hàng chưa chọn phân loại`,
+      );
+    }
+
+    if (toNumber(product.qty) < qty) {
+      throw new Error(
+        `Sản phẩm "${product.title}" chỉ còn ${product.qty}, cần xuất ${qty}`,
+      );
+    }
+
+    // Tìm các lô còn hàng theo FIFO.
+    const batches = await InventoryBatch.find({
+      productId: item.productId,
+      variantName,
+      isActive: { $ne: false },
+      remainingQty: { $gt: 0 },
+    })
+      .sort({
+        importDate: 1,
+        created_at: 1,
+        _id: 1,
+      })
+      .session(session);
+
+    const availableQty = batches.reduce(
+      (sum, batch) => sum + Math.max(0, toNumber(batch.remainingQty)),
+      0,
+    );
+
+    if (availableQty < qty) {
+      throw new Error(
+        `Không đủ hàng trong các lô của "${product.title}" - ` +
+          `${variantName || "Không phân loại"}. ` +
+          `Tồn lô: ${availableQty}, cần xuất: ${qty}`,
+      );
+    }
+
+    let remainingToDeduct = qty;
+    const allocations = [];
+
+    // Trừ lần lượt từ lô cũ nhất.
+    for (const batch of batches) {
+      if (remainingToDeduct <= 0) break;
+
+      const batchBeforeQty = toNumber(batch.remainingQty);
+      const deductQty = Math.min(batchBeforeQty, remainingToDeduct);
+
+      if (deductQty <= 0) continue;
+
+      batch.remainingQty = batchBeforeQty - deductQty;
+
+      await batch.save({ session });
+
+      allocations.push({
+        batchId: batch._id,
+        batchCode: batch.batchCode || "",
+        qty: deductQty,
+        unitCost: toNumber(batch.unitCost),
+      });
+
+      historyDocuments.push({
+        type: "order",
+        referenceType: "Order",
+        referenceId: order._id,
+        referenceCode: order.code || "",
+
+        productId: product._id,
+        productTitle: product.title || "",
+        productCode: getProductCode(product),
+        variantName,
+
+        qty: -deductQty,
+        beforeQty: batchBeforeQty,
+        afterQty: toNumber(batch.remainingQty),
+
+        batchId: batch._id,
+        batchCode: batch.batchCode || "",
+        unitCost: toNumber(batch.unitCost),
+
+        note: `Xuất FIFO theo đơn ${order.code || order._id}`,
+
+        createdBy: userId || null,
+        rollback: false,
+        rollback_at: null,
+        rollbackBy: null,
+        created_at: new Date(),
+      });
+
+      remainingToDeduct -= deductQty;
+    }
+
+    if (remainingToDeduct > 0) {
+      throw new Error(
+        `Không thể phân bổ đủ lô cho sản phẩm "${product.title}"`,
+      );
+    }
+
+    // Lưu phân bổ lô vào từng dòng sản phẩm của đơn.
+    item.batchAllocations = allocations;
+
+    // Trừ tồn kho tổng và tồn kho phân loại.
+    if (variant) {
+      variant.qty = toNumber(variant.qty) - qty;
+    }
+
+    product.qty = toNumber(product.qty) - qty;
+    product.soldQty = toNumber(product.soldQty) + qty;
+    product.updated_at = new Date();
+
+    await product.save({ session });
+  }
+
+  if (historyDocuments.length > 0) {
+    await InventoryHistory.insertMany(historyDocuments, {
+      session,
+      ordered: true,
+    });
+  }
+
+  order.stockDeducted = true;
+  order.markModified("items");
+
+  return {
+    historyRecords: historyDocuments.length,
+    allocatedItems: (order.items || []).length,
+  };
+};
+
+/* =========================================================
+   FIFO: HOÀN KHO VỀ ĐÚNG LÔ ĐÃ XUẤT
+========================================================= */
+
+const restoreOrderStockFIFO = async ({ order, session }) => {
+  const histories = await InventoryHistory.find({
+    referenceType: "Order",
+    referenceId: order._id,
+    type: "order",
+    rollback: { $ne: true },
+  })
+    .sort({ created_at: 1 })
+    .session(session);
+
+  if (!histories.length && order.stockDeducted) {
+    throw new Error(
+      `Không tìm thấy lịch sử xuất kho của đơn ${order.code || order._id}`,
+    );
+  }
+
+  const productCache = new Map();
+  let restoredQty = 0;
+
+  for (const history of histories) {
+    const qty = Math.abs(toNumber(history.qty));
+
+    if (qty <= 0) continue;
+
+    const productId = String(history.productId);
+
+    let product = productCache.get(productId);
+
+    if (!product) {
+      product = await Product.findById(history.productId).session(session);
+
+      if (!product) {
+        throw new Error(
+          `Không tìm thấy sản phẩm ${history.productId} để hoàn kho`,
+        );
+      }
+
+      productCache.set(productId, product);
+    }
+
+    // Hoàn đúng số lượng vào đúng lô.
+    if (history.batchId) {
+      const batch = await InventoryBatch.findById(history.batchId).session(
+        session,
+      );
+
+      if (!batch) {
+        throw new Error(
+          `Không tìm thấy lô ${history.batchCode || history.batchId} để hoàn kho`,
+        );
+      }
+
+      batch.remainingQty = toNumber(batch.remainingQty) + qty;
+
+      await batch.save({ session });
+    }
+
+    const variantName = String(history.variantName || "").trim();
+
+    if (variantName) {
+      const variant = findVariant(product, variantName);
+
+      if (!variant) {
+        throw new Error(
+          `Không tìm thấy phân loại "${variantName}" khi hoàn kho`,
+        );
+      }
+
+      variant.qty = toNumber(variant.qty) + qty;
+    }
+
+    product.qty = toNumber(product.qty) + qty;
+    product.soldQty = Math.max(0, toNumber(product.soldQty) - qty);
+    product.updated_at = new Date();
+
+    await product.save({ session });
+
+    restoredQty += qty;
+  }
+
+  // Xóa lịch sử xuất của đơn sau khi đã hoàn kho thành công.
+  await InventoryHistory.deleteMany(
+    {
+      referenceType: "Order",
+      referenceId: order._id,
+      type: "order",
+    },
+    { session },
+  );
+
+  order.stockDeducted = false;
+  order.markModified("items");
+
+  return {
+    historyRecords: histories.length,
+    restoredQty,
+  };
+};
+
+/* =========================================================
+   SYNC ORDER STOCK
+   - Chỉ đồng bộ đơn chưa trừ kho
+   - Tự phân bổ FIFO
+========================================================= */
+
+const syncOrderStockAsync = async (req, res) => {
+  const session = await mongoose.startSession();
+
+  try {
+    const { orderId } = req.body || {};
+
+    const filter = {
+      stockDeducted: { $ne: true },
+      status: { $ne: "cancelled" },
+    };
+
+    if (orderId) {
+      if (!mongoose.Types.ObjectId.isValid(orderId)) {
+        return res.status(400).json({
+          success: false,
+          message: "orderId không hợp lệ",
+        });
+      }
+
+      filter._id = orderId;
+    }
+
+    const result = {
+      totalOrders: 0,
+      updatedOrders: 0,
+      historyRecords: 0,
+      skippedOrders: 0,
+    };
+
+    await session.withTransaction(async () => {
+      const orders = await Order.find(filter)
+        .sort({ created_at: 1 })
+        .session(session);
+
+      result.totalOrders = orders.length;
+
+      for (const order of orders) {
+        if (!Array.isArray(order.items) || order.items.length === 0) {
+          result.skippedOrders++;
+          continue;
+        }
+
+        const stockResult = await deductOrderStockFIFO({
+          order,
+          session,
+          userId: req.user?._id || null,
+        });
+
+        order.updated_at = new Date();
+
+        await order.save({ session });
+
+        result.updatedOrders++;
+        result.historyRecords += stockResult.historyRecords;
+      }
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Đồng bộ tồn kho theo FIFO thành công",
+      ...result,
+    });
+  } catch (error) {
+    console.error("syncOrderStockAsync:", error);
+
+    return res.status(400).json({
+      success: false,
+      message: error?.message || "Không thể đồng bộ tồn kho theo FIFO",
+    });
+  } finally {
+    await session.endSession();
+  }
+};
 /* =========================================================
    CREATE ORDER
    TẠO ĐƠN = TRỪ KHO NGAY
@@ -441,10 +803,16 @@ const createOrderAsync = async (req, res) => {
             productId: rawItem.productId,
             variantName,
             qty: 0,
+            batchAllocations: [],
           });
         }
 
         mergedItems.get(key).qty += qty;
+        if (Array.isArray(rawItem.batchAllocations)) {
+          mergedItems
+            .get(key)
+            .batchAllocations.push(...rawItem.batchAllocations);
+        }
       }
 
       // PROCESS ITEMS - KHÔNG TRỪ KHO
@@ -501,6 +869,12 @@ const createOrderAsync = async (req, res) => {
           qty: item.qty,
           total: itemTotal,
           thumbnail: product.thumbnail || "",
+          batchAllocations: (item.batchAllocations || []).map((a) => ({
+            batchId: a.batchId,
+            batchCode: a.batchCode || "",
+            qty: toNumber(a.qty),
+            unitCost: toNumber(a.unitCost),
+          })),
         });
       }
 
@@ -692,6 +1066,20 @@ const rollbackOrderStockAsync = async (req, res) => {
 
         const restoreQty = Math.abs(toNumber(history.qty));
 
+        // Hoàn số lượng về đúng lô đã xuất. Lịch sử cũ không có batchId thì bỏ qua.
+        if (restoreQty > 0 && history.batchId) {
+          const batch = await InventoryBatch.findById(history.batchId).session(
+            session,
+          );
+          if (!batch) {
+            throw new Error(
+              `Không tìm thấy lô ${history.batchCode || history.batchId} khi rollback`,
+            );
+          }
+          batch.remainingQty = toNumber(batch.remainingQty) + restoreQty;
+          await batch.save({ session });
+        }
+
         if (restoreQty <= 0) {
           continue;
         }
@@ -882,297 +1270,6 @@ const rollbackOrderStockAsync = async (req, res) => {
       success: false,
 
       message: error?.message || "Không thể rollback tồn kho",
-    });
-  } finally {
-    await session.endSession();
-  }
-};
-/* =========================================================
-   SYNC ORDER STOCK
-   DÙNG CHO ĐƠN CŨ CHƯA TRỪ KHO
-========================================================= */
-
-const syncOrderStockAsync = async (req, res) => {
-  const session = await mongoose.startSession();
-
-  try {
-    const { orderId } = req.body || {};
-
-    const filter = {
-      stockDeducted: {
-        $ne: true,
-      },
-
-      status: {
-        $ne: "cancelled",
-      },
-    };
-
-    /* =====================================================
-       ORDER ID
-    ===================================================== */
-
-    if (orderId) {
-      if (!mongoose.Types.ObjectId.isValid(orderId)) {
-        return res.status(400).json({
-          success: false,
-          message: "orderId không hợp lệ",
-        });
-      }
-
-      filter._id = orderId;
-    }
-
-    const result = {
-      totalOrders: 0,
-      updatedOrders: 0,
-      updatedItems: 0,
-      skippedOrders: 0,
-      historyRecords: 0,
-    };
-
-    await session.withTransaction(async () => {
-      const orders = await Order.find(filter)
-        .sort({
-          created_at: 1,
-        })
-        .session(session);
-
-      result.totalOrders = orders.length;
-
-      for (const order of orders) {
-        if (!Array.isArray(order.items) || order.items.length === 0) {
-          order.stockDeducted = true;
-
-          order.updated_at = new Date();
-
-          await order.save({
-            session,
-          });
-
-          result.skippedOrders++;
-
-          continue;
-        }
-
-        const productCache = new Map();
-
-        /* =================================================
-             PASS 1 - CHECK ALL STOCK
-          ================================================= */
-
-        for (const item of order.items) {
-          if (!item?.productId) {
-            throw new Error(
-              `Đơn ${order.code || order._id} có sản phẩm không hợp lệ`,
-            );
-          }
-
-          const productId = String(item.productId);
-
-          let product = productCache.get(productId);
-
-          if (!product) {
-            product = await Product.findById(item.productId).session(session);
-
-            if (!product) {
-              throw new Error(`Không tìm thấy sản phẩm ${item.productId}`);
-            }
-
-            productCache.set(productId, product);
-          }
-
-          const qty = toNumber(item.qty);
-
-          if (qty <= 0) {
-            throw new Error(
-              `Số lượng không hợp lệ trong đơn ${order.code || order._id}`,
-            );
-          }
-
-          const variantName = String(item.variantName || "").trim();
-
-          if (variantName) {
-            const variant = findVariant(product, variantName);
-
-            if (!variant) {
-              throw new Error(
-                `Không tìm thấy variant "${variantName}" của sản phẩm "${product.title}"`,
-              );
-            }
-
-            const stock = toNumber(variant.qty);
-
-            if (stock < qty) {
-              throw new Error(
-                `Sản phẩm "${product.title}" - "${variantName}" chỉ còn ${stock}, cần ${qty}`,
-              );
-            }
-          } else {
-            const stock = toNumber(product.qty);
-
-            if (stock < qty) {
-              throw new Error(
-                `Sản phẩm "${product.title}" chỉ còn ${stock}, cần ${qty}`,
-              );
-            }
-          }
-        }
-
-        /* =================================================
-             PASS 2 - DEDUCT
-          ================================================= */
-
-        for (const item of order.items) {
-          const product = productCache.get(String(item.productId));
-
-          if (!product) {
-            throw new Error("Không tìm thấy sản phẩm");
-          }
-
-          const qty = toNumber(item.qty);
-
-          const variantName = String(item.variantName || "").trim();
-
-          if (variantName) {
-            const variant = findVariant(product, variantName);
-
-            if (!variant) {
-              throw new Error(`Không tìm thấy variant "${variantName}"`);
-            }
-
-            const beforeVariantQty = toNumber(variant.qty);
-
-            const afterVariantQty = beforeVariantQty - qty;
-
-            const beforeProductQty = toNumber(product.qty);
-
-            const afterProductQty = beforeProductQty - qty;
-
-            if (afterVariantQty < 0 || afterProductQty < 0) {
-              throw new Error(
-                `Tồn kho không đủ cho sản phẩm "${product.title}"`,
-              );
-            }
-
-            variant.qty = afterVariantQty;
-
-            product.qty = afterProductQty;
-
-            product.updated_at = new Date();
-
-            await product.save({
-              session,
-            });
-
-            await InventoryHistory.create(
-              [
-                buildInventoryHistory({
-                  order,
-
-                  product,
-
-                  variantName,
-
-                  qty,
-
-                  beforeQty: beforeVariantQty,
-
-                  afterQty: afterVariantQty,
-
-                  userId: req.user?._id || null,
-                }),
-              ],
-              {
-                session,
-              },
-            );
-          } else {
-            const beforeQty = toNumber(product.qty);
-
-            const afterQty = beforeQty - qty;
-
-            if (afterQty < 0) {
-              throw new Error(
-                `Tồn kho không đủ cho sản phẩm "${product.title}"`,
-              );
-            }
-
-            product.qty = afterQty;
-
-            product.updated_at = new Date();
-
-            await product.save({
-              session,
-            });
-
-            await InventoryHistory.create(
-              [
-                buildInventoryHistory({
-                  order,
-
-                  product,
-
-                  variantName: "",
-
-                  qty,
-
-                  beforeQty,
-
-                  afterQty,
-
-                  userId: req.user?._id || null,
-                }),
-              ],
-              {
-                session,
-              },
-            );
-          }
-
-          result.updatedItems++;
-
-          result.historyRecords++;
-        }
-
-        /* =================================================
-             MARK STOCK DEDUCTED
-          ================================================= */
-
-        order.stockDeducted = true;
-
-        order.updated_at = new Date();
-
-        await order.save({
-          session,
-        });
-
-        result.updatedOrders++;
-      }
-    });
-
-    return res.status(200).json({
-      success: true,
-
-      message: "Đồng bộ tồn kho thành công",
-
-      totalOrders: result.totalOrders,
-
-      updatedOrders: result.updatedOrders,
-
-      updatedItems: result.updatedItems,
-
-      historyRecords: result.historyRecords,
-
-      skippedOrders: result.skippedOrders,
-    });
-  } catch (error) {
-    console.error("syncOrderStockAsync:", error);
-
-    return res.status(400).json({
-      success: false,
-
-      message: error?.message || "Không thể đồng bộ tồn kho",
     });
   } finally {
     await session.endSession();
@@ -1560,9 +1657,9 @@ const listOrdersAsync = async (req, res) => {
 
 /* =========================================================
    UPDATE ORDER STATUS
-   - completed: trừ kho + ghi lịch sử
-   - cancelled: rollback kho nếu đã trừ
-   - Chống trừ kho hai lần
+   - completed: xuất kho theo FIFO
+   - cancelled: hoàn kho về đúng lô
+   - pending / confirmed / shipping: không trừ kho
 ========================================================= */
 
 const updateOrderStatusAsync = async (req, res) => {
@@ -1587,6 +1684,7 @@ const updateOrderStatusAsync = async (req, res) => {
     }
 
     let updatedOrder = null;
+    let stockResult = null;
 
     await session.withTransaction(async () => {
       const order = await Order.findById(id).session(session);
@@ -1595,209 +1693,30 @@ const updateOrderStatusAsync = async (req, res) => {
         throw new Error("Không tìm thấy đơn hàng");
       }
 
-      // Không xử lý lại đơn nếu trạng thái không thay đổi
       if (order.status === newStatus) {
         updatedOrder = order;
         return;
       }
 
-      const productCache = new Map();
-
-      /* =================================================
-         COMPLETED: TRỪ KHO VÀ GHI LỊCH SỬ
-      ================================================= */
-
+      // Chỉ xuất kho khi chuyển sang completed.
       if (newStatus === "completed" && order.stockDeducted !== true) {
-        const inventoryHistories = [];
-
-        for (const item of order.items || []) {
-          const qty = toNumber(item.qty);
-
-          if (qty <= 0) {
-            throw new Error(
-              `Số lượng sản phẩm "${item.productTitle}" không hợp lệ`,
-            );
-          }
-
-          const productId = String(item.productId);
-
-          let product = productCache.get(productId);
-
-          if (!product) {
-            product = await Product.findById(item.productId).session(session);
-
-            if (!product) {
-              throw new Error(`Không tìm thấy sản phẩm "${item.productTitle}"`);
-            }
-
-            productCache.set(productId, product);
-          }
-
-          const variantName = String(item.variantName || "").trim();
-
-          // Có phân loại
-          if (variantName) {
-            const variant = findVariant(product, variantName);
-
-            if (!variant) {
-              throw new Error(
-                `Không tìm thấy phân loại "${variantName}" của sản phẩm "${product.title}"`,
-              );
-            }
-
-            const beforeVariantQty = toNumber(variant.qty);
-            const beforeProductQty = toNumber(product.qty);
-
-            if (beforeVariantQty < qty) {
-              throw new Error(
-                `Phân loại "${variantName}" của sản phẩm "${product.title}" chỉ còn ${beforeVariantQty}, cần ${qty}`,
-              );
-            }
-
-            if (beforeProductQty < qty) {
-              throw new Error(
-                `Tồn tổng sản phẩm "${product.title}" chỉ còn ${beforeProductQty}, cần ${qty}`,
-              );
-            }
-
-            // Trừ tồn phân loại
-            variant.qty = beforeVariantQty - qty;
-
-            // Trừ tồn tổng sản phẩm
-            product.qty = beforeProductQty - qty;
-
-            inventoryHistories.push({
-              product,
-              variantName,
-              qty,
-              beforeQty: beforeVariantQty,
-              afterQty: toNumber(variant.qty),
-            });
-          } else {
-            // Sản phẩm không có phân loại
-            const beforeProductQty = toNumber(product.qty);
-
-            if (beforeProductQty < qty) {
-              throw new Error(
-                `Sản phẩm "${product.title}" chỉ còn ${beforeProductQty}, cần ${qty}`,
-              );
-            }
-
-            product.qty = beforeProductQty - qty;
-
-            inventoryHistories.push({
-              product,
-              variantName: "",
-              qty,
-              beforeQty: beforeProductQty,
-              afterQty: toNumber(product.qty),
-            });
-          }
-
-          // Cập nhật số lượng đã bán
-          product.soldQty = toNumber(product.soldQty) + qty;
-
-          product.updated_at = new Date();
-
-          await product.save({ session });
-        }
-
-        // Ghi lịch sử xuất kho
-        const historyDocuments = inventoryHistories.map((history) =>
-          buildInventoryHistory({
-            order,
-            product: history.product,
-            variantName: history.variantName,
-            qty: history.qty,
-            beforeQty: history.beforeQty,
-            afterQty: history.afterQty,
-            userId: req.user?._id || null,
-          }),
-        );
-
-        if (historyDocuments.length > 0) {
-          await InventoryHistory.insertMany(historyDocuments, {
-            session,
-            ordered: true,
-          });
-        }
-
-        order.stockDeducted = true;
+        stockResult = await deductOrderStockFIFO({
+          order,
+          session,
+          userId: req.user?._id || null,
+        });
       }
 
-      /* =================================================
-         CANCELLED: ROLLBACK KHO NẾU ĐÃ TRỪ
-      ================================================= */
-
+      // Hủy đơn đã xuất: hoàn kho về đúng lô.
       if (newStatus === "cancelled" && order.stockDeducted === true) {
-        for (const item of order.items || []) {
-          const qty = toNumber(item.qty);
-
-          if (qty <= 0) {
-            throw new Error(
-              `Số lượng rollback của "${item.productTitle}" không hợp lệ`,
-            );
-          }
-
-          const productId = String(item.productId);
-
-          let product = productCache.get(productId);
-
-          if (!product) {
-            product = await Product.findById(item.productId).session(session);
-
-            if (!product) {
-              throw new Error(
-                `Không tìm thấy sản phẩm "${item.productTitle}" để hoàn kho`,
-              );
-            }
-
-            productCache.set(productId, product);
-          }
-
-          const variantName = String(item.variantName || "").trim();
-
-          // Hoàn kho phân loại và tổng sản phẩm
-          if (variantName) {
-            const variant = findVariant(product, variantName);
-
-            if (!variant) {
-              throw new Error(
-                `Không tìm thấy phân loại "${variantName}" để hoàn kho`,
-              );
-            }
-
-            variant.qty = toNumber(variant.qty) + qty;
-            product.qty = toNumber(product.qty) + qty;
-          } else {
-            product.qty = toNumber(product.qty) + qty;
-          }
-
-          // Hoàn lại số lượng đã bán
-          product.soldQty = Math.max(0, toNumber(product.soldQty) - qty);
-
-          product.updated_at = new Date();
-
-          await product.save({ session });
-        }
-
-        // Xóa lịch sử xuất kho của đơn đã rollback
-        await InventoryHistory.deleteMany(
-          {
-            referenceType: "Order",
-            referenceId: order._id,
-          },
-          { session },
-        );
-
-        order.stockDeducted = false;
+        stockResult = await restoreOrderStockFIFO({
+          order,
+          session,
+        });
       }
 
-      /* =================================================
-         COMPLETED: GIỮ NGUYÊN GIÁ ĐÃ CHỐT
-      ================================================= */
-
-      if (newStatus === "completed" && order.status !== "completed") {
+      // Giữ nguyên giá đã chốt, không lấy giá mới từ Product.
+      if (newStatus === "completed") {
         calculateOrderTotal(order);
 
         order.paidAmount = Math.min(
@@ -1811,10 +1730,6 @@ const updateOrderStatusAsync = async (req, res) => {
         );
       }
 
-      /* =================================================
-         SAVE STATUS
-      ================================================= */
-
       order.status = newStatus;
       order.updated_at = new Date();
 
@@ -1827,11 +1742,12 @@ const updateOrderStatusAsync = async (req, res) => {
       success: true,
       message:
         newStatus === "completed"
-          ? "Hoàn thành đơn hàng và xử lý tồn kho thành công"
+          ? "Xác nhận xuất kho thành công theo FIFO"
           : newStatus === "cancelled"
-            ? "Hủy đơn hàng và rollback tồn kho thành công"
+            ? "Hủy đơn hàng và hoàn kho thành công"
             : "Cập nhật trạng thái đơn hàng thành công",
       order: updatedOrder,
+      stock: stockResult,
     });
   } catch (error) {
     console.error("updateOrderStatusAsync:", error);
@@ -1844,7 +1760,6 @@ const updateOrderStatusAsync = async (req, res) => {
     await session.endSession();
   }
 };
-
 /* =========================================================
    SYNC PRODUCT PRICE API
 ========================================================= */
@@ -2365,6 +2280,230 @@ const getCustomerPurchaseStatsAsync = async (req, res) => {
     });
   }
 };
+// Dán hàm này vào orderController.js, phía trên module.exports cuối cùng.
+const getBestSellingProductsAsync = async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(
+      100,
+      Math.max(1, parseInt(req.query.limit, 10) || 20),
+    );
+    const search = String(req.query.search || "").trim();
+    const type = String(req.query.type || "").trim();
+    const categoryId = String(req.query.categoryId || "").trim();
+    const fromDate = String(req.query.fromDate || "").trim();
+    const toDate = String(req.query.toDate || "").trim();
+    const sortBy = req.query.sortBy === "revenue" ? "revenue" : "qty";
+    const match = { stockDeducted: true, status: { $ne: "cancelled" } };
+    const validDate = /^\d{4}-\d{2}-\d{2}$/;
+    if (
+      (fromDate && !validDate.test(fromDate)) ||
+      (toDate && !validDate.test(toDate))
+    ) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Ngày phải có định dạng YYYY-MM-DD" });
+    }
+    if (fromDate || toDate) {
+      match.created_at = {};
+      if (fromDate)
+        match.created_at.$gte = new Date(`${fromDate}T00:00:00+07:00`);
+      if (toDate)
+        match.created_at.$lte = new Date(`${toDate}T23:59:59.999+07:00`);
+      if (
+        Object.values(match.created_at).some((d) => Number.isNaN(d.getTime()))
+      ) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Ngày không hợp lệ" });
+      }
+    }
+    if (categoryId && !mongoose.Types.ObjectId.isValid(categoryId)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "categoryId không hợp lệ" });
+    }
+    const numeric = (field) => ({
+      $convert: { input: field, to: "double", onError: 0, onNull: 0 },
+    });
+    const pipeline = [
+      { $match: match },
+      { $unwind: "$items" },
+      { $match: { "items.productId": { $ne: null } } },
+      {
+        $addFields: {
+          itemQty: numeric("$items.qty"),
+          itemRevenue: {
+            $multiply: [numeric("$items.qty"), numeric("$items.price")],
+          },
+        },
+      },
+      { $match: { itemQty: { $gt: 0 } } },
+      {
+        $group: {
+          _id: {
+            productId: "$items.productId",
+            variantName: { $ifNull: ["$items.variantName", ""] },
+          },
+          productTitle: { $last: "$items.productTitle" },
+          productCode: { $last: "$items.productCode" },
+          thumbnail: { $last: "$items.thumbnail" },
+          soldQty: { $sum: "$itemQty" },
+          revenue: { $sum: "$itemRevenue" },
+          orderIds: { $addToSet: "$_id" },
+        },
+      },
+      {
+        $group: {
+          _id: "$_id.productId",
+          productTitle: { $last: "$productTitle" },
+          productCode: { $last: "$productCode" },
+          thumbnail: { $last: "$thumbnail" },
+          soldQty: { $sum: "$soldQty" },
+          revenue: { $sum: "$revenue" },
+          orderIdArrays: { $push: "$orderIds" },
+          variants: {
+            $push: {
+              name: "$_id.variantName",
+              soldQty: "$soldQty",
+              revenue: "$revenue",
+            },
+          },
+        },
+      },
+      {
+        $addFields: {
+          orderCount: {
+            $size: {
+              $reduce: {
+                input: "$orderIdArrays",
+                initialValue: [],
+                in: { $setUnion: ["$$value", "$$this"] },
+              },
+            },
+          },
+        },
+      },
+      {
+        $lookup: {
+          from: Product.collection.name,
+          localField: "_id",
+          foreignField: "_id",
+          as: "product",
+        },
+      },
+      { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
+      {
+        $addFields: {
+          productTitle: { $ifNull: ["$product.title", "$productTitle"] },
+          productCode: { $ifNull: ["$product.code", "$productCode"] },
+          thumbnail: { $ifNull: ["$product.thumbnail", "$thumbnail"] },
+          stockQty: { $ifNull: ["$product.qty", 0] },
+          type: "$product.type",
+          categoryId: "$product.categoryId",
+          variants: {
+            $map: {
+              input: "$variants",
+              as: "v",
+              in: {
+                name: "$$v.name",
+                soldQty: "$$v.soldQty",
+                revenue: "$$v.revenue",
+                stockQty: {
+                  $let: {
+                    vars: {
+                      matching: {
+                        $filter: {
+                          input: { $ifNull: ["$product.variants", []] },
+                          as: "pv",
+                          cond: { $eq: ["$$pv.name", "$$v.name"] },
+                        },
+                      },
+                    },
+                    in: {
+                      $ifNull: [{ $arrayElemAt: ["$$matching.qty", 0] }, 0],
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      ...(type ? [{ $match: { type } }] : []),
+      ...(categoryId
+        ? [{ $match: { categoryId: new mongoose.Types.ObjectId(categoryId) } }]
+        : []),
+      ...(search
+        ? [
+            {
+              $match: {
+                $or: [
+                  {
+                    productTitle: {
+                      $regex: search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+                      $options: "i",
+                    },
+                  },
+                  {
+                    productCode: {
+                      $regex: search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+                      $options: "i",
+                    },
+                  },
+                ],
+              },
+            },
+          ]
+        : []),
+      { $project: { product: 0, orderIdArrays: 0 } },
+      { $sort: { [sortBy === "revenue" ? "revenue" : "soldQty"]: -1, _id: 1 } },
+      {
+        $facet: {
+          rows: [{ $skip: (page - 1) * limit }, { $limit: limit }],
+          summary: [
+            {
+              $group: {
+                _id: null,
+                totalProducts: { $sum: 1 },
+                totalSold: { $sum: "$soldQty" },
+                totalRevenue: { $sum: "$revenue" },
+              },
+            },
+          ],
+          top10: [
+            { $limit: 10 },
+            { $project: { productTitle: 1, soldQty: 1, revenue: 1 } },
+          ],
+        },
+      },
+    ];
+    const [result] = await Order.aggregate(pipeline).allowDiskUse(true);
+    const summary = result.summary[0] || {
+      totalProducts: 0,
+      totalSold: 0,
+      totalRevenue: 0,
+    };
+    return res.json({
+      success: true,
+      data: result.rows,
+      summary,
+      top10: result.top10,
+      pagination: {
+        page,
+        limit,
+        total: summary.totalProducts,
+        totalPages: Math.ceil(summary.totalProducts / limit),
+      },
+    });
+  } catch (error) {
+    console.error("getBestSellingProductsAsync:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Không thể thống kê sản phẩm bán chạy",
+    });
+  }
+};
 
 module.exports = {
   // Giữ nguyên các hàm export hiện có
@@ -2399,4 +2538,5 @@ module.exports = {
 
   // Thống kê mua hàng khách hàng
   getCustomerPurchaseStatsAsync,
+  getBestSellingProductsAsync,
 };

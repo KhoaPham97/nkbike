@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const { Product } = require("../models/products");
 const InventoryReceipt = require("../models/InventoryReceipt");
 const InventoryHistory = require("../models/inventoryHistory");
+const InventoryBatch = require("../models/InventoryBatch");
 
 // =====================================================
 // HELPER
@@ -169,6 +170,7 @@ const createInventoryReceiptAsync = async (req, res) => {
       // ===============================================
 
       const receiptItems = [];
+      let batchSequence = 0;
 
       let totalQty = 0;
       let totalAmount = 0;
@@ -251,8 +253,30 @@ const createInventoryReceiptAsync = async (req, res) => {
           });
 
           // -------------------------------------------
-          // INVENTORY HISTORY
+          // INVENTORY BATCH + HISTORY
           // -------------------------------------------
+
+          // TẠO LÔ RIÊNG CHO DÒNG NHẬP NÀY
+          batchSequence += 1;
+          const batchCode = `${receiptCode}-${String(batchSequence).padStart(2, "0")}`;
+          const [batch] = await InventoryBatch.create(
+            [{
+              batchCode,
+              productId: product._id,
+              productTitle: product.title || "",
+              productCode,
+              variantName,
+              importDate: new Date(),
+              importQty: qty,
+              remainingQty: qty,
+              unitCost,
+              source: "receipt",
+              sourceConfidence: "recorded",
+              note: note || `Nhập theo phiếu ${receiptCode}`,
+              createdBy: req.user?._id || null,
+            }],
+            { session },
+          );
 
           await InventoryHistory.create(
             [
@@ -272,6 +296,10 @@ const createInventoryReceiptAsync = async (req, res) => {
                 productCode,
 
                 variantName,
+
+                batchId: batch._id,
+                batchCode: batch.batchCode,
+                unitCost,
 
                 qty,
 
@@ -327,8 +355,30 @@ const createInventoryReceiptAsync = async (req, res) => {
           });
 
           // -------------------------------------------
-          // INVENTORY HISTORY
+          // INVENTORY BATCH + HISTORY
           // -------------------------------------------
+
+          // TẠO LÔ RIÊNG CHO DÒNG NHẬP NÀY
+          batchSequence += 1;
+          const batchCode = `${receiptCode}-${String(batchSequence).padStart(2, "0")}`;
+          const [batch] = await InventoryBatch.create(
+            [{
+              batchCode,
+              productId: product._id,
+              productTitle: product.title || "",
+              productCode,
+              variantName,
+              importDate: new Date(),
+              importQty: qty,
+              remainingQty: qty,
+              unitCost,
+              source: "receipt",
+              sourceConfidence: "recorded",
+              note: note || `Nhập theo phiếu ${receiptCode}`,
+              createdBy: req.user?._id || null,
+            }],
+            { session },
+          );
 
           await InventoryHistory.create(
             [
@@ -348,6 +398,10 @@ const createInventoryReceiptAsync = async (req, res) => {
                 productCode,
 
                 variantName: "",
+
+                batchId: batch._id,
+                batchCode: batch.batchCode,
+                unitCost,
 
                 qty,
 
@@ -403,6 +457,13 @@ const createInventoryReceiptAsync = async (req, res) => {
       );
 
       receipt = created[0];
+
+      // GẮN ID PHIẾU NHẬP VÀO CÁC LÔ VỪA TẠO
+      await InventoryBatch.updateMany(
+        { batchCode: { $regex: `^${receiptCode}-` } },
+        { $set: { importReceiptId: receipt._id } },
+        { session },
+      );
 
       // ===============================================
       // UPDATE HISTORY REFERENCE ID

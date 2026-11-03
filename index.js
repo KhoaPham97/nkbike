@@ -8,7 +8,7 @@ const { Server } = require("socket.io");
 
 const chatRoutes = require("./src/routes/chatRoute");
 const setupChatSocket = require("./src/socket/chatSocket");
-
+const setupStockNotificationSocket = require("./src/socket/stockNotificationSocket");
 // ==============================
 // ENV CHECK
 // ==============================
@@ -82,6 +82,8 @@ app.use("/api/chat", chatRoutes);
 
 setupChatSocket(io);
 
+// Socket thông báo tồn kho
+setupStockNotificationSocket(io);
 // ==============================
 // FRONTEND PRODUCTION
 // ==============================

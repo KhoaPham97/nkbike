@@ -57,7 +57,12 @@ router.patch("/sync-product-price", orderController.syncProductPriceAsync);
 router.put("/:id/status", orderController.updateOrderStatusAsync);
 
 // ==================== GET BY ID ====================
-
+router.get(
+  "/best-selling-products",
+  auth,
+  adminAuth,
+  orderController.getBestSellingProductsAsync,
+);
 // Route động đặt cuối cùng
 router.get("/:id", orderController.getOrderByIdAsync);
 

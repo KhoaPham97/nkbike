@@ -30,6 +30,7 @@ const settingsRoutes = require("./src/routes/settings");
 const adminRoutes = require("./src/routes/admin");
 const InventoryHistory = require("./src/routes/inventoryHistoryRouter");
 const vehicleRoutes = require("./src/routes/vehicleRoutes");
+const inventoryBatchRoutes = require("./src/routes/inventoryBatch");
 
 app.use(cors());
 
@@ -53,5 +54,6 @@ app.use("/api/settings", settingsRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/inventory-history", InventoryHistory);
 app.use("/api/vehicles", vehicleRoutes);
+app.use("/api/inventory-batch", inventoryBatchRoutes);
 
 module.exports = app;

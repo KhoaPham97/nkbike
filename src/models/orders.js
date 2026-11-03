@@ -45,6 +45,34 @@ const orderItemSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+
+    // Phân bổ lô nhập thủ công; chỉ trừ kho khi thực hiện xuất kho.
+    batchAllocations: {
+      type: [
+        {
+          batchId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "InventoryBatch",
+            required: true,
+          },
+          batchCode: {
+            type: String,
+            default: "",
+          },
+          qty: {
+            type: Number,
+            required: true,
+            min: 0,
+          },
+          unitCost: {
+            type: Number,
+            default: 0,
+            min: 0,
+          },
+        },
+      ],
+      default: [],
+    },
   },
   {
     _id: false,

@@ -112,6 +112,28 @@ const inventoryHistorySchema = new mongoose.Schema(
     },
 
     // ========================================================
+    // LÔ NHẬP GỐC
+    // ========================================================
+    batchId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "InventoryBatch",
+      default: null,
+      index: true,
+    },
+
+    batchCode: {
+      type: String,
+      default: "",
+      trim: true,
+      index: true,
+    },
+
+    unitCost: {
+      type: Number,
+      default: 0,
+    },
+
+    // ========================================================
     // SỐ LƯỢNG THAY ĐỔI
     //
     // Nhập kho  : +100
@@ -255,5 +277,8 @@ inventoryHistorySchema.index({
   type: 1,
   created_at: -1,
 });
+
+// Tìm lịch sử theo lô nhập
+inventoryHistorySchema.index({ batchId: 1, created_at: -1 });
 
 module.exports = mongoose.model("inventoryHistory", inventoryHistorySchema);
