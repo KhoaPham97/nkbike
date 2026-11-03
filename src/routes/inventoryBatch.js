@@ -13,6 +13,7 @@ const {
   getBatchReconciliationAsync,
   importNewBatchAsync,
   importMultipleBatchesAsync,
+  syncBatchUnitCosts,
 } = require("../controllers/inventoryBatchController");
 
 router.get("/", auth, adminAuth, listInventoryBatchesAsync);
@@ -45,4 +46,5 @@ router.post(
 );
 router.post("/import", importNewBatchAsync);
 router.post("/import-multiple", auth, adminAuth, importMultipleBatchesAsync);
+router.post("/sync-costs", auth, syncBatchUnitCosts);
 module.exports = router;

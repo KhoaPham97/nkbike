@@ -1387,6 +1387,178 @@ const importMultipleBatchesAsync = async (req, res) => {
     await session.endSession();
   }
 };
+// =====================================================
+// ĐỒNG BỘ GIÁ VỐN LÔ NHẬP
+// Chỉ cập nhật lô chưa có giá vốn
+// Lấy giá từ Product.variants[].defaultPrice
+// Đơn vị: CNY
+// =====================================================
+const syncBatchUnitCosts = async (req, res) => {
+  try {
+    const batches = await InventoryBatch.find({
+      $or: [
+        { unitCost: { $exists: false } },
+        { unitCost: null },
+        { unitCost: 0 },
+      ],
+    }).lean();
+
+    const productIds = [
+      ...new Set(
+        batches
+          .filter((batch) => mongoose.Types.ObjectId.isValid(batch.productId))
+          .map((batch) => String(batch.productId)),
+      ),
+    ];
+
+    // Lấy sản phẩm một lần, tránh query lặp
+    const products = await Product.find({
+      _id: { $in: productIds },
+    })
+      .select("_id title variants")
+      .lean();
+
+    const productMap = new Map(
+      products.map((product) => [String(product._id), product]),
+    );
+
+    const normalize = (value) =>
+      String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, "");
+
+    let updated = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    const details = [];
+
+    for (const batch of batches) {
+      try {
+        const product = productMap.get(String(batch.productId));
+
+        if (!product) {
+          skipped++;
+
+          details.push({
+            batchCode: batch.batchCode,
+            status: "skipped",
+            reason: "Không tìm thấy sản phẩm",
+          });
+
+          continue;
+        }
+
+        const variant = (product.variants || []).find(
+          (item) => normalize(item.name) === normalize(batch.variantName),
+        );
+
+        if (!variant) {
+          skipped++;
+
+          details.push({
+            batchCode: batch.batchCode,
+            productTitle: product.title,
+            variantName: batch.variantName,
+            status: "skipped",
+            reason: "Không tìm thấy biến thể tương ứng",
+          });
+
+          continue;
+        }
+
+        const unitCost = Number(variant.defaultPrice);
+
+        if (!Number.isFinite(unitCost) || unitCost <= 0) {
+          skipped++;
+
+          details.push({
+            batchCode: batch.batchCode,
+            productTitle: product.title,
+            variantName: batch.variantName,
+            status: "skipped",
+            reason: "Biến thể chưa có giá vốn hợp lệ",
+          });
+
+          continue;
+        }
+
+        const result = await InventoryBatch.updateOne(
+          {
+            _id: batch._id,
+            $or: [
+              { unitCost: { $exists: false } },
+              { unitCost: null },
+              { unitCost: 0 },
+            ],
+          },
+          {
+            $set: {
+              unitCost,
+              sourceConfidence: "inferred",
+              note: [
+                batch.note,
+                "Đồng bộ giá vốn từ Product.variants.defaultPrice",
+              ]
+                .filter(Boolean)
+                .join(" | "),
+            },
+          },
+        );
+
+        if (result.modifiedCount > 0) {
+          updated++;
+
+          details.push({
+            batchCode: batch.batchCode,
+            productTitle: product.title,
+            variantName: batch.variantName,
+            unitCost,
+            currency: "CNY",
+            status: "updated",
+          });
+        } else {
+          skipped++;
+
+          details.push({
+            batchCode: batch.batchCode,
+            status: "skipped",
+            reason: "Lô đã được cập nhật hoặc không còn đủ điều kiện",
+          });
+        }
+      } catch (error) {
+        failed++;
+
+        details.push({
+          batchCode: batch.batchCode,
+          status: "failed",
+          reason: error.message,
+        });
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Đồng bộ giá vốn hoàn tất",
+      summary: {
+        total: batches.length,
+        updated,
+        skipped,
+        failed,
+      },
+      details,
+    });
+  } catch (error) {
+    console.error("syncBatchUnitCosts:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Lỗi đồng bộ giá vốn",
+      error: error.message,
+    });
+  }
+};
 
 module.exports = {
   listInventoryBatchesAsync,
@@ -1399,4 +1571,5 @@ module.exports = {
   getBatchReconciliationAsync,
   importNewBatchAsync,
   importMultipleBatchesAsync,
+  syncBatchUnitCosts,
 };

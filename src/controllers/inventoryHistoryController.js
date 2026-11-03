@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 
 const InventoryHistory = require("../models/inventoryHistory");
+const { Product } = require("../models/products");
 
 /**
  * =========================================================
@@ -496,7 +497,192 @@ const rebuildInventoryHistoryAsync = async (req, res) => {
  * =========================================================
  */
 
+// =====================================================
+// ĐỒNG BỘ GIÁ VỐN INVENTORY HISTORY
+// - Chỉ cập nhật unitCost chưa có hoặc bằng 0
+// - Tìm Product theo productId
+// - Tìm variants theo variantName
+// - Lấy variants[].defaultPrice
+// - Giữ nguyên CNY
+// - Không thay đổi qty, tồn kho hoặc rollback
+// =====================================================
+const syncInventoryHistoryUnitCosts = async (req, res) => {
+  try {
+    const histories = await InventoryHistory.find({
+      $or: [
+        { unitCost: { $exists: false } },
+        { unitCost: null },
+        { unitCost: 0 },
+      ],
+    })
+      .select(
+        "_id productId productTitle variantName batchId batchCode unitCost note",
+      )
+      .lean();
+
+    if (!histories.length) {
+      return res.status(200).json({
+        success: true,
+        message: "Không có lịch sử cần đồng bộ giá vốn",
+        summary: {
+          total: 0,
+          updated: 0,
+          skipped: 0,
+          failed: 0,
+        },
+      });
+    }
+
+    const productIds = [
+      ...new Set(
+        histories
+          .filter((item) => mongoose.Types.ObjectId.isValid(item.productId))
+          .map((item) => String(item.productId)),
+      ),
+    ];
+
+    // Lấy sản phẩm một lần
+    const products = await Product.find({
+      _id: { $in: productIds },
+    })
+      .select("_id title variants")
+      .lean();
+
+    const productMap = new Map(
+      products.map((product) => [String(product._id), product]),
+    );
+
+    const normalize = (value) =>
+      String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, "");
+
+    let updated = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    const details = [];
+
+    for (const history of histories) {
+      try {
+        const product = productMap.get(String(history.productId));
+
+        if (!product) {
+          skipped++;
+          details.push({
+            id: history._id,
+            status: "skipped",
+            reason: "Không tìm thấy sản phẩm",
+          });
+          continue;
+        }
+
+        const variant = (product.variants || []).find(
+          (item) => normalize(item.name) === normalize(history.variantName),
+        );
+
+        if (!variant) {
+          skipped++;
+          details.push({
+            id: history._id,
+            productTitle: product.title,
+            variantName: history.variantName,
+            status: "skipped",
+            reason: "Không tìm thấy biến thể tương ứng",
+          });
+          continue;
+        }
+
+        const unitCost = Number(variant.defaultPrice);
+
+        if (!Number.isFinite(unitCost) || unitCost <= 0) {
+          skipped++;
+          details.push({
+            id: history._id,
+            productTitle: product.title,
+            variantName: history.variantName,
+            status: "skipped",
+            reason: "Biến thể chưa có giá vốn hợp lệ",
+          });
+          continue;
+        }
+
+        // Chỉ cập nhật nếu unitCost vẫn đang bằng 0
+        const result = await InventoryHistory.updateOne(
+          {
+            _id: history._id,
+            $or: [
+              { unitCost: { $exists: false } },
+              { unitCost: null },
+              { unitCost: 0 },
+            ],
+          },
+          {
+            $set: {
+              unitCost,
+              note: [
+                history.note,
+                "Đồng bộ giá vốn từ Product.variants.defaultPrice",
+              ]
+                .filter(Boolean)
+                .join(" | "),
+            },
+          },
+        );
+
+        if (result.modifiedCount > 0) {
+          updated++;
+          details.push({
+            id: history._id,
+            productTitle: product.title,
+            variantName: history.variantName,
+            batchCode: history.batchCode,
+            unitCost,
+            currency: "CNY",
+            status: "updated",
+          });
+        } else {
+          skipped++;
+          details.push({
+            id: history._id,
+            status: "skipped",
+            reason: "Bản ghi đã được cập nhật hoặc không còn đủ điều kiện",
+          });
+        }
+      } catch (error) {
+        failed++;
+        details.push({
+          id: history._id,
+          status: "failed",
+          reason: error.message,
+        });
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Đồng bộ giá vốn lịch sử kho hoàn tất",
+      summary: {
+        total: histories.length,
+        updated,
+        skipped,
+        failed,
+      },
+      details,
+    });
+  } catch (error) {
+    console.error("syncInventoryHistoryUnitCosts:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Lỗi đồng bộ giá vốn lịch sử kho",
+      error: error.message,
+    });
+  }
+};
 module.exports = {
   listInventoryHistoryAsync,
   rebuildInventoryHistoryAsync,
+  syncInventoryHistoryUnitCosts,
 };

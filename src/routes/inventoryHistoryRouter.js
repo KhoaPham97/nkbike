@@ -10,8 +10,12 @@ const {
 const {
   rebuildInventoryHistoryAsync,
 } = require("../controllers/inventoryHistoryController");
+const {
+  syncInventoryHistoryUnitCosts,
+} = require("../controllers/inventoryHistoryController");
+
 router.get("/", auth, adminAuth, listInventoryHistoryAsync);
 
 router.post("/rebuild", auth, adminAuth, rebuildInventoryHistoryAsync);
-
+router.post("/sync-costs", auth, syncInventoryHistoryUnitCosts);
 module.exports = router;
