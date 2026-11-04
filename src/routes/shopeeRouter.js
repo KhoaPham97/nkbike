@@ -22,5 +22,5 @@ router.delete(
   adminOnly,
   controller.disconnectShopeeShop,
 );
-
+router.post("/orders/sync", auth, adminOnly, controller.viewShopeeOrders);
 module.exports = router;

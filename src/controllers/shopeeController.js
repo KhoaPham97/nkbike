@@ -8,6 +8,8 @@ const {
   createAuthUrl,
   getAccessToken,
   refreshAccessToken,
+  getOrderList,
+  getOrderDetail,
 } = require("../utils/shopeeApi");
 
 const REDIRECT_URI = process.env.SHOPEE_REDIRECT_URI;
@@ -265,6 +267,134 @@ exports.disconnectShopeeShop = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: error.message,
+    });
+  }
+};
+
+// =====================================================
+// 6. XEM ĐƠN HÀNG SHOPEE
+// POST /api/shopee/orders/sync
+// Không lưu MongoDB, không trừ tồn kho
+// =====================================================
+
+exports.viewShopeeOrders = async (req, res) => {
+  try {
+    const {
+      shopId,
+      timeFrom,
+      timeTo,
+      pageSize = 50,
+      cursor = "",
+      timeRangeField = "create_time",
+      orderStatus,
+    } = req.body;
+
+    if (!shopId) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng chọn shop Shopee",
+      });
+    }
+
+    const from = Number(timeFrom);
+    const to = Number(timeTo);
+
+    if (
+      !Number.isFinite(from) ||
+      !Number.isFinite(to) ||
+      from <= 0 ||
+      to <= from
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Khoảng thời gian không hợp lệ",
+      });
+    }
+
+    // Shopee giới hạn khoảng thời gian truy vấn.
+    // Giới hạn giao diện ở 15 ngày cho mỗi lần xem.
+    if (to - from > 15 * 24 * 60 * 60) {
+      return res.status(400).json({
+        success: false,
+        message: "Mỗi lần xem chỉ được chọn tối đa 15 ngày",
+      });
+    }
+
+    if (!["create_time", "update_time"].includes(timeRangeField)) {
+      return res.status(400).json({
+        success: false,
+        message: "timeRangeField không hợp lệ",
+      });
+    }
+
+    const shop = await ShopeeShop.findOne({
+      shopId: String(shopId),
+      status: "connected",
+    }).select("+accessToken");
+
+    if (!shop) {
+      return res.status(404).json({
+        success: false,
+        message: "Shop Shopee chưa kết nối hoặc không tồn tại",
+      });
+    }
+
+    // 1. Lấy danh sách mã đơn
+    const listResult = await getOrderList(shop.accessToken, shop.shopId, {
+      timeFrom: from,
+      timeTo: to,
+      pageSize,
+      cursor,
+      timeRangeField,
+      orderStatus,
+    });
+
+    const listData = listResult.response || {};
+    const orderSnList = (listData.order_list || [])
+      .map((item) => item.order_sn)
+      .filter(Boolean);
+
+    if (!orderSnList.length) {
+      return res.json({
+        success: true,
+        message: "Không tìm thấy đơn hàng",
+        data: [],
+        pagination: {
+          more: Boolean(listData.more),
+          nextCursor: listData.next_cursor || "",
+        },
+      });
+    }
+
+    // 2. Lấy chi tiết đơn hàng
+    const detailResult = await getOrderDetail(
+      shop.accessToken,
+      shop.shopId,
+      orderSnList,
+    );
+
+    const orders = detailResult.response?.order_list || [];
+
+    return res.json({
+      success: true,
+      message: "Lấy đơn hàng Shopee thành công",
+      data: orders,
+      pagination: {
+        more: Boolean(listData.more),
+        nextCursor: listData.next_cursor || "",
+        pageSize: orderSnList.length,
+      },
+    });
+  } catch (error) {
+    console.error("SHOPEE VIEW ORDERS:", error.response?.data || error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể lấy đơn hàng Shopee",
+      error:
+        process.env.NODE_ENV === "development"
+          ? error.response?.data || error.message
+          : undefined,
     });
   }
 };
