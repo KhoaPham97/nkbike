@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const controller = require("../controllers/costController");
-const auth = require("../middlewares/auth");
+const { auth } = require("../middlewares/auth");
 
 // Gắn middleware xác thực admin hiện tại của dự án trước các route này.
 router.get("/", controller.list);

@@ -1,5 +1,5 @@
 const express = require("express");
-const auth = require("../middlewares/auth");
+const { auth } = require("../middlewares/auth");
 
 const AuthController = require("../controllers/authController");
 
@@ -12,7 +12,7 @@ router.post("/api/signin", AuthController.signIn);
 router.post(
   "/api/signup",
   // validateHuman,
-  AuthController.signUp
+  AuthController.signUp,
 );
 router.post("/api/signout", auth, AuthController.signOut);
 

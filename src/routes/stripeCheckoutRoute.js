@@ -1,29 +1,29 @@
-const express = require('express')
-const bodyParser = require('body-parser')
+const express = require("express");
+const bodyParser = require("body-parser");
 
 // Import auth middleware
-const auth = require('../middlewares/auth')
+const { auth } = require("../middlewares/auth");
 
 // Get Image Middleware
 const {
   getImageForStripeCheckoutMiddleware,
-} = require('../middlewares/uploadImage')
+} = require("../middlewares/uploadImage");
 
-const router = express.Router()
+const router = express.Router();
 
-const stripeCheckoutController = require('../controllers/stripeCheckoutController')
+const stripeCheckoutController = require("../controllers/stripeCheckoutController");
 
 router.post(
-  '/api/order/:id/create-checkout-session',
+  "/api/order/:id/create-checkout-session",
   auth,
   getImageForStripeCheckoutMiddleware,
   stripeCheckoutController.createCheckOutSessionWithStripe,
-)
+);
 // Webhook Endpoint
 router.post(
-  '/webhook',
-  bodyParser.raw({ type: 'application/json' }),
+  "/webhook",
+  bodyParser.raw({ type: "application/json" }),
   stripeCheckoutController.webhookStripe,
-)
+);
 
-module.exports = router
+module.exports = router;

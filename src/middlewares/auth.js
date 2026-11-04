@@ -12,7 +12,7 @@ const auth = async (req, res, next) => {
       });
     }
 
-    const token = header.replace("Bearer ", "").trim();
+    const token = header.slice(7).trim();
 
     if (!token) {
       return res.status(401).json({
@@ -20,10 +20,6 @@ const auth = async (req, res, next) => {
         message: "Access token is empty",
       });
     }
-
-    // ============================
-    // VERIFY JWT
-    // ============================
 
     const tokenPayload = await verifyToken(token, process.env.JWT_SECRET);
 
@@ -34,10 +30,6 @@ const auth = async (req, res, next) => {
       });
     }
 
-    // ============================
-    // FIND USER
-    // ============================
-
     const user = await User.findOne({
       _id: tokenPayload.id,
       "tokens.token": token,
@@ -46,13 +38,9 @@ const auth = async (req, res, next) => {
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: "User not logged in or unauthorized",
+        message: "User not logged in",
       });
     }
-
-    // ============================
-    // SUCCESS
-    // ============================
 
     req.token = token;
     req.user = user;
@@ -60,15 +48,32 @@ const auth = async (req, res, next) => {
 
     next();
   } catch (err) {
-    console.error("========== AUTH ERROR ==========");
-    console.error(err);
+    console.error("AUTH ERROR:", err.message);
 
     return res.status(401).json({
       success: false,
-      message: "User not logged in or unauthorized",
+      message: "Unauthorized",
       error: process.env.NODE_ENV === "development" ? err.message : undefined,
     });
   }
 };
 
-module.exports = auth;
+const adminOnly = (req, res, next) => {
+  const role = String(
+    req.user?.role || req.tokenPayload?.role || "",
+  ).toLowerCase();
+
+  if (role !== "admin") {
+    return res.status(403).json({
+      success: false,
+      message: "Admin permission required",
+    });
+  }
+
+  next();
+};
+
+module.exports = {
+  auth,
+  adminOnly,
+};

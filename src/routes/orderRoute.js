@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const orderController = require("../controllers/orderController");
-const auth = require("../middlewares/auth");
+const { auth } = require("../middlewares/auth");
 const adminAuth = require("../middlewares/adminAuth");
 
 // ==================== GET ====================

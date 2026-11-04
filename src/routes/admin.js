@@ -4,7 +4,7 @@ const router = express.Router();
 
 const { changeAdminPasswordAsync } = require("../controllers/adminController");
 
-const auth = require("../middlewares/auth");
+const { auth } = require("../middlewares/auth");
 const adminAuth = require("../middlewares/adminAuth");
 
 // ============================================================
