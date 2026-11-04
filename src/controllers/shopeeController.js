@@ -277,6 +277,53 @@ exports.disconnectShopeeShop = async (req, res) => {
 // Không lưu MongoDB, không trừ tồn kho
 // =====================================================
 
+// Chuyển ngày frontend thành Unix timestamp (giây)
+const parseShopeeTime = (value, isEnd = false) => {
+  if (value === undefined || value === null || value === "") {
+    return NaN;
+  }
+
+  const str = String(value).trim();
+
+  // Trường hợp YYYY-MM-DD
+  const dateMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+  if (dateMatch) {
+    const [, year, month, day] = dateMatch.map(Number);
+
+    // Kiểm tra ngày hợp lệ
+    const check = new Date(Date.UTC(year, month - 1, day));
+
+    if (
+      check.getUTCFullYear() !== year ||
+      check.getUTCMonth() !== month - 1 ||
+      check.getUTCDate() !== day
+    ) {
+      return NaN;
+    }
+
+    // Việt Nam UTC+7
+    const date = isEnd
+      ? new Date(`${str}T23:59:59+07:00`)
+      : new Date(`${str}T00:00:00+07:00`);
+
+    return Math.floor(date.getTime() / 1000);
+  }
+
+  // Trường hợp Unix timestamp
+  if (/^\d+$/.test(str)) {
+    const timestamp = Number(str);
+
+    // Nếu là milliseconds thì chuyển sang seconds
+    return timestamp > 9999999999 ? Math.floor(timestamp / 1000) : timestamp;
+  }
+
+  // Trường hợp ISO datetime
+  const parsed = new Date(str).getTime();
+
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : NaN;
+};
+
 exports.viewShopeeOrders = async (req, res) => {
   try {
     const {
@@ -296,8 +343,9 @@ exports.viewShopeeOrders = async (req, res) => {
       });
     }
 
-    const from = Number(timeFrom);
-    const to = Number(timeTo);
+    // 1. Chuyển đổi ngày
+    const from = parseShopeeTime(timeFrom, false);
+    const to = parseShopeeTime(timeTo, true);
 
     if (
       !Number.isFinite(from) ||
@@ -311,8 +359,7 @@ exports.viewShopeeOrders = async (req, res) => {
       });
     }
 
-    // Shopee giới hạn khoảng thời gian truy vấn.
-    // Giới hạn giao diện ở 15 ngày cho mỗi lần xem.
+    // 2. Kiểm tra giới hạn 15 ngày
     if (to - from > 15 * 24 * 60 * 60) {
       return res.status(400).json({
         success: false,
@@ -320,6 +367,7 @@ exports.viewShopeeOrders = async (req, res) => {
       });
     }
 
+    // 3. Kiểm tra loại thời gian
     if (!["create_time", "update_time"].includes(timeRangeField)) {
       return res.status(400).json({
         success: false,
@@ -327,6 +375,7 @@ exports.viewShopeeOrders = async (req, res) => {
       });
     }
 
+    // 4. Tìm shop
     const shop = await ShopeeShop.findOne({
       shopId: String(shopId),
       status: "connected",
@@ -339,21 +388,23 @@ exports.viewShopeeOrders = async (req, res) => {
       });
     }
 
-    // 1. Lấy danh sách mã đơn
+    // 5. Lấy danh sách mã đơn
     const listResult = await getOrderList(shop.accessToken, shop.shopId, {
       timeFrom: from,
       timeTo: to,
-      pageSize,
+      pageSize: Math.min(Math.max(Number(pageSize) || 50, 1), 100),
       cursor,
       timeRangeField,
       orderStatus,
     });
 
     const listData = listResult.response || {};
+
     const orderSnList = (listData.order_list || [])
       .map((item) => item.order_sn)
       .filter(Boolean);
 
+    // 6. Không có đơn hàng
     if (!orderSnList.length) {
       return res.json({
         success: true,
@@ -362,11 +413,12 @@ exports.viewShopeeOrders = async (req, res) => {
         pagination: {
           more: Boolean(listData.more),
           nextCursor: listData.next_cursor || "",
+          pageSize: 0,
         },
       });
     }
 
-    // 2. Lấy chi tiết đơn hàng
+    // 7. Lấy chi tiết đơn hàng
     const detailResult = await getOrderDetail(
       shop.accessToken,
       shop.shopId,
@@ -375,6 +427,7 @@ exports.viewShopeeOrders = async (req, res) => {
 
     const orders = detailResult.response?.order_list || [];
 
+    // 8. Trả kết quả
     return res.json({
       success: true,
       message: "Lấy đơn hàng Shopee thành công",
