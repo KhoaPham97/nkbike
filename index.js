@@ -88,18 +88,6 @@ setupStockNotificationSocket(io);
 // FRONTEND PRODUCTION
 // ==============================
 
-if (process.env.NODE_ENV === "production") {
-  const frontendPath = path.join(__dirname, "../frontend/build");
-
-  app.use(express.static(frontendPath));
-
-  app.get("*", (req, res) => {
-    res.sendFile(
-      path.resolve(__dirname, "..", "frontend", "build", "index.html"),
-    );
-  });
-}
-
 // ==============================
 // ROOT API
 // ==============================

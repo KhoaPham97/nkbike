@@ -112,12 +112,18 @@ exports.saveSkuMapping = async (req, res) => {
       });
     }
 
-    const variants = product.variants.filter(
-      (variant) =>
-        String(variant.code || "").trim() === String(variantCode).trim() &&
-        String(variant.name || "").trim() === String(variantName).trim(),
-    );
+    const variants = (product.variants || []).filter((variant) => {
+      const savedCode = String(
+        variant.variantCode || variant.code || variant.sku || "",
+      ).trim();
 
+      const savedName = String(variant.name || "").trim();
+
+      return (
+        savedCode === String(variantCode).trim() &&
+        savedName === String(variantName).trim()
+      );
+    });
     if (variants.length !== 1) {
       return res.status(400).json({
         success: false,

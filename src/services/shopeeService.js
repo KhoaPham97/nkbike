@@ -278,42 +278,59 @@ async function getShopWithTokens(shopId) {
 async function refreshShopeeAccessToken(shopId) {
   const config = getShopeeConfig();
 
-  const shop = await getShopWithTokens(shopId);
+  const normalizedShopId = String(shopId);
+  const shop = await getShopWithTokens(normalizedShopId);
+
+  if (!shop.refreshToken) {
+    throw new Error("Shop không có refresh token");
+  }
 
   const path = "/api/v2/auth/access_token/get";
   const timestamp = Math.floor(Date.now() / 1000);
 
-  const baseString =
-    String(config.partnerId) +
-    path +
-    String(timestamp) +
-    String(shop.refreshToken) +
-    String(shopId);
-
-  const sign = createSign(baseString, config.partnerKey);
+  // REFRESH TOKEN là Public API.
+  // Chỉ ký partner_id + path + timestamp.
+  const sign = createPublicSign(path, timestamp, config);
 
   const client = getHttpClient();
 
-  const response = await client.post(path, {
-    partner_id: config.partnerId,
-    shop_id: Number(shopId),
-    refresh_token: shop.refreshToken,
-    timestamp,
-    sign,
+  console.log("SHOPEE REFRESH REQUEST:", {
+    host: config.baseUrl,
+    path,
+    partnerId: config.partnerId,
+    shopId: normalizedShopId,
+    hasRefreshToken: Boolean(shop.refreshToken),
+    hasSign: Boolean(sign),
   });
 
+  const response = await client.post(
+    path,
+    {
+      partner_id: Number(config.partnerId),
+      shop_id: Number(normalizedShopId),
+      refresh_token: shop.refreshToken,
+      timestamp,
+      sign,
+    },
+    {
+      params: {
+        partner_id: Number(config.partnerId),
+        timestamp,
+        sign,
+      },
+    },
+  );
   const tokenData = extractShopeeResponse(response);
 
   if (!tokenData.access_token || !tokenData.refresh_token) {
-    throw new Error(
-      "Shopee không trả về token mới. Vui lòng kết nối lại shop.",
-    );
+    throw new Error("Shopee không trả về access_token hoặc refresh_token mới");
   }
 
   const expiresAt = new Date(
     Date.now() + Number(tokenData.expire_in || 14400) * 1000,
   );
 
+  // Shopee cấp refresh_token mới sau mỗi lần refresh.
   shop.accessToken = tokenData.access_token;
   shop.refreshToken = tokenData.refresh_token;
   shop.accessTokenExpiresAt = expiresAt;
@@ -323,7 +340,7 @@ async function refreshShopeeAccessToken(shopId) {
 
   return {
     success: true,
-    shopId: String(shopId),
+    shopId: normalizedShopId,
     accessTokenExpiresAt: expiresAt,
   };
 }
@@ -364,83 +381,118 @@ async function callShopeeShopApi({
 }) {
   const config = getShopeeConfig();
 
-  const shop = await getValidShopToken(shopId);
+  // 1. Kiểm tra cấu hình
+  if (
+    !Number.isSafeInteger(Number(config.partnerId)) ||
+    Number(config.partnerId) <= 0
+  ) {
+    throw new Error("SHOPEE_PARTNER_ID không hợp lệ");
+  }
 
-  const timestamp = Math.floor(Date.now() / 1000);
+  if (!config.partnerKey) {
+    throw new Error("Thiếu SHOPEE_PARTNER_KEY");
+  }
 
-  const sign = createShopSign({
-    path,
-    timestamp,
-    accessToken: shop.accessToken,
-    shopId,
-    config,
-  });
+  if (!shopId || !Number.isSafeInteger(Number(shopId))) {
+    throw new Error("shopId không hợp lệ");
+  }
 
-  const authParams = {
-    partner_id: config.partnerId,
-    timestamp,
-    access_token: shop.accessToken,
-    shop_id: Number(shopId),
-    sign,
-  };
+  if (!path || !path.startsWith("/api/v2/")) {
+    throw new Error("Shopee API path không hợp lệ");
+  }
+
+  const normalizedShopId = String(shopId);
 
   const client = getHttpClient();
 
-  try {
-    const response = await client.request({
-      url: path,
-      method,
-      params: {
-        ...params,
-        ...authParams,
-      },
-      data: body,
+  // 2. Hàm tạo request và ký chữ ký mới
+  async function executeRequest(shop) {
+    if (!shop?.accessToken) {
+      throw new Error("Shop chưa có access token");
+    }
+
+    const timestamp = Math.floor(Date.now() / 1000);
+
+    const sign = createShopSign({
+      path,
+      timestamp,
+      accessToken: shop.accessToken,
+      shopId: normalizedShopId,
+      config,
     });
 
+    // Tham số xác thực luôn được đặt cuối,
+    // tránh params bên ngoài ghi đè partner_id hoặc sign.
+    const queryParams = {
+      ...params,
+      partner_id: Number(config.partnerId),
+      timestamp,
+      access_token: shop.accessToken,
+      shop_id: Number(normalizedShopId),
+      sign,
+    };
+
+    console.log("SHOPEE API REQUEST:", {
+      host: config.baseUrl,
+      path,
+      method,
+      partnerId: Number(config.partnerId),
+      shopId: normalizedShopId,
+      hasAccessToken: Boolean(shop.accessToken),
+      hasSign: Boolean(sign),
+      hasPartnerId: Boolean(queryParams.partner_id),
+    });
+
+    return client.request({
+      url: path,
+      method,
+      params: queryParams,
+      data: body,
+    });
+  }
+
+  // 3. Lấy token còn hạn
+  let shop = await getValidShopToken(normalizedShopId);
+
+  try {
+    const response = await executeRequest(shop);
     return extractShopeeResponse(response);
   } catch (error) {
-    const responseData = error?.response?.data;
+    const responseData = error?.response?.data || {};
 
-    // Token có thể vừa hết hạn hoặc bị Shopee thu hồi.
-    // Chỉ tự refresh và thử lại một lần với lỗi token.
-    const errorCode = String(responseData?.error || "").toLowerCase();
+    const errorCode = String(responseData.error || "").toLowerCase();
+    const errorMessage = String(
+      responseData.message ||
+        responseData.msg ||
+        responseData.debug_message ||
+        error.message ||
+        "",
+    ).toLowerCase();
 
-    const message = String(responseData?.message || "").toLowerCase();
+    console.error("SHOPEE API ERROR:", {
+      path,
+      status: error?.response?.status,
+      error: responseData.error,
+      message: responseData.message || responseData.msg,
+    });
 
+    // 4. Chỉ refresh nếu lỗi thực sự liên quan đến token
     const tokenError =
-      errorCode.includes("token") || message.includes("access token");
+      errorCode.includes("token") ||
+      errorMessage.includes("access token") ||
+      errorMessage.includes("invalid access");
 
     if (!tokenError) {
       throw error;
     }
 
-    await refreshShopeeAccessToken(shopId);
+    // 5. Refresh token
+    await refreshShopeeAccessToken(normalizedShopId);
 
-    const refreshedShop = await getShopWithTokens(shopId);
+    // 6. Lấy token mới và gửi lại đúng một lần
+    shop = await getShopWithTokens(normalizedShopId);
 
-    const retryTimestamp = Math.floor(Date.now() / 1000);
-
-    const retrySign = createShopSign({
-      path,
-      timestamp: retryTimestamp,
-      accessToken: refreshedShop.accessToken,
-      shopId,
-      config,
-    });
-
-    const retryResponse = await client.request({
-      url: path,
-      method,
-      params: {
-        ...params,
-        partner_id: config.partnerId,
-        timestamp: retryTimestamp,
-        access_token: refreshedShop.accessToken,
-        shop_id: Number(shopId),
-        sign: retrySign,
-      },
-      data: body,
-    });
+    const retryResponse = await executeRequest(shop);
 
     return extractShopeeResponse(retryResponse);
   }

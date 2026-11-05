@@ -5,6 +5,7 @@ const { auth, adminOnly } = require("../middlewares/auth");
 
 const controller = require("../controllers/shopeeController");
 const shopeeInventoryController = require("../controllers/shopeeInventoryController");
+const shopeeProductController = require("../controllers/shopeeProductController");
 
 // =====================================================
 // SHOPEE CALLBACK
@@ -59,5 +60,15 @@ router.get(
   adminOnly,
   shopeeInventoryController.getTransactions,
 );
+// QUẢN LÝ SẢN PHẨM SHOPEE
+// =====================================================
 
+router.post(
+  "/products/sync",
+  auth,
+  adminOnly,
+  shopeeProductController.syncProducts,
+);
+
+router.get("/products", auth, adminOnly, shopeeProductController.getProducts);
 module.exports = router;
