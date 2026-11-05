@@ -10,44 +10,30 @@ const SHOPEE_HOST = IS_SANDBOX
   ? "https://partner.test-stable.shopeemobile.com"
   : "https://partner.shopeemobile.com";
 
-console.log("========== SHOPEE CONFIG ==========");
-console.log("Environment:", IS_SANDBOX ? "sandbox" : "live");
-console.log("Partner ID:", PARTNER_ID);
-console.log("Partner Key exists:", !!PARTNER_KEY);
-console.log("API Host:", SHOPEE_HOST);
-console.log("===================================");
-
 function validateConfig() {
   if (!Number.isSafeInteger(PARTNER_ID) || PARTNER_ID <= 0 || !PARTNER_KEY) {
     throw new Error("Shopee Partner configuration is invalid");
   }
 }
 
-// Chữ ký Public API
 function createSign(path, timestamp) {
   validateConfig();
 
-  const baseString = `${PARTNER_ID}${path}${timestamp}`;
-
   return crypto
     .createHmac("sha256", PARTNER_KEY)
-    .update(baseString)
+    .update(`${PARTNER_ID}${path}${timestamp}`)
     .digest("hex");
 }
 
-// Chữ ký Shop API
 function createShopSign(path, timestamp, accessToken, shopId) {
   validateConfig();
 
-  const baseString = `${PARTNER_ID}${path}${timestamp}${accessToken}${shopId}`;
-
   return crypto
     .createHmac("sha256", PARTNER_KEY)
-    .update(baseString)
+    .update(`${PARTNER_ID}${path}${timestamp}${accessToken}${shopId}`)
     .digest("hex");
 }
 
-// Tạo link OAuth
 function createAuthUrl(redirectUri) {
   validateConfig();
 
@@ -65,7 +51,14 @@ function createAuthUrl(redirectUri) {
   return `${SHOPEE_HOST}${path}?${params.toString()}`;
 }
 
-// Public API
+function throwShopeeError(data) {
+  if (data?.error) {
+    throw new Error(
+      `${data.error}: ${data.message || data.msg || data.debug_message || ""}`,
+    );
+  }
+}
+
 async function publicPost(path, body) {
   validateConfig();
 
@@ -84,22 +77,14 @@ async function publicPost(path, body) {
         timestamp,
         sign,
       },
-      timeout: 20000,
+      timeout: 30000,
     },
   );
 
-  if (response.data?.error) {
-    throw new Error(
-      `${response.data.error}: ${
-        response.data.message || response.data.msg || ""
-      }`,
-    );
-  }
-
+  throwShopeeError(response.data);
   return response.data;
 }
 
-// Shop API GET
 async function shopGet(path, accessToken, shopId, query = {}) {
   validateConfig();
 
@@ -122,21 +107,10 @@ async function shopGet(path, accessToken, shopId, query = {}) {
     timeout: 30000,
   });
 
-  if (response.data?.error) {
-    throw new Error(
-      `${response.data.error}: ${
-        response.data.message ||
-        response.data.msg ||
-        response.data.debug_message ||
-        ""
-      }`,
-    );
-  }
-
+  throwShopeeError(response.data);
   return response.data;
 }
 
-// Lấy danh sách mã đơn
 async function getOrderList(
   accessToken,
   shopId,
@@ -160,14 +134,11 @@ async function getOrderList(
     response_optional_fields: "order_status",
   };
 
-  if (orderStatus) {
-    query.order_status = orderStatus;
-  }
+  if (orderStatus) query.order_status = orderStatus;
 
   return shopGet(path, accessToken, shopId, query);
 }
 
-// Lấy chi tiết đơn hàng
 async function getOrderDetail(accessToken, shopId, orderSnList) {
   if (!Array.isArray(orderSnList) || orderSnList.length === 0) {
     return { response: { order_list: [] } };
@@ -179,31 +150,97 @@ async function getOrderDetail(accessToken, shopId, orderSnList) {
 
   const path = "/api/v2/order/get_order_detail";
 
+  const optionalFields = [
+    "buyer_user_id",
+    "buyer_username",
+    "estimated_shipping_fee",
+    "recipient_address",
+    "actual_shipping_fee",
+    "item_list",
+    "pay_time",
+    "dropshipper",
+    "buyer_message",
+    "total_amount",
+    "currency",
+    "create_time",
+    "update_time",
+    "order_status",
+    "shipping_carrier",
+    "payment_method",
+    "cancel_reason",
+    "cancel_by",
+    "buyer_cancel_reason",
+  ].join(",");
+
   return shopGet(path, accessToken, shopId, {
     order_sn_list: orderSnList.join(","),
-    response_optional_fields: [
-      "buyer_user_id",
-      "buyer_username",
-      "estimated_shipping_fee",
-      "recipient_address",
-      "actual_shipping_fee",
-      "item_list",
-      "pay_time",
-      "dropshipper",
-      "buyer_message",
-      "total_amount",
-      "currency",
-      "create_time",
-      "update_time",
-      "order_status",
-      "shipping_carrier",
-      "payment_method",
-      "cancel_reason",
-      "cancel_by",
-      "buyer_cancel_reason",
-    ].join(","),
+    response_optional_fields: optionalFields,
   });
 }
+
+// =====================================================
+// TRẢ HÀNG
+// =====================================================
+
+// Lấy danh sách yêu cầu trả hàng.
+// pageNo bắt đầu từ 1, pageSize tối đa 100.
+async function getReturnList(
+  accessToken,
+  shopId,
+  {
+    pageNo = 1,
+    pageSize = 50,
+    createTimeFrom,
+    createTimeTo,
+    updateTimeFrom,
+    updateTimeTo,
+    status,
+  } = {},
+) {
+  const path = "/api/v2/returns/get_return_list";
+
+  const query = {
+    page_no: Math.max(Number(pageNo) || 1, 1),
+    page_size: Math.min(Math.max(Number(pageSize) || 50, 1), 100),
+  };
+
+  if (createTimeFrom != null) {
+    query.create_time_from = Number(createTimeFrom);
+  }
+
+  if (createTimeTo != null) {
+    query.create_time_to = Number(createTimeTo);
+  }
+
+  if (updateTimeFrom != null) {
+    query.update_time_from = Number(updateTimeFrom);
+  }
+
+  if (updateTimeTo != null) {
+    query.update_time_to = Number(updateTimeTo);
+  }
+
+  if (status) query.status = status;
+
+  return shopGet(path, accessToken, shopId, query);
+}
+
+// Lấy chi tiết một yêu cầu trả hàng.
+async function getReturnDetail(accessToken, shopId, returnSn) {
+  if (!returnSn) {
+    throw new Error("Thiếu returnSn");
+  }
+
+  const path = "/api/v2/returns/get_return_detail";
+
+  return shopGet(path, accessToken, shopId, {
+    return_sn: String(returnSn),
+  });
+}
+
+// =====================================================
+// AUTH
+// =====================================================
 
 async function getAccessToken(code, shopId) {
   return publicPost("/api/v2/auth/token/get", {
@@ -222,11 +259,17 @@ async function refreshAccessToken(refreshToken, shopId) {
 module.exports = {
   PARTNER_ID,
   SHOPEE_HOST,
+
   createSign,
   createShopSign,
   createAuthUrl,
+
   getAccessToken,
   refreshAccessToken,
+
   getOrderList,
   getOrderDetail,
+
+  getReturnList,
+  getReturnDetail,
 };

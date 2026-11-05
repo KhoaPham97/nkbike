@@ -1,68 +1,58 @@
-const crypto = require("crypto");
-
 const ShopeeShop = require("../models/ShopeeShop");
-const ShopeeOAuthState = require("../models/ShopeeOAuthState");
 
 const {
-  PARTNER_ID,
-  createAuthUrl,
-  getAccessToken,
-  refreshAccessToken,
-  getOrderList,
-  getOrderDetail,
-} = require("../utils/shopeeApi");
-
-const REDIRECT_URI = process.env.SHOPEE_REDIRECT_URI;
-const FRONTEND_URL =
-  process.env.SHOPEE_FRONTEND_URL || "https://nk-admin.onrender.com";
+  getShopeeAuthUrl,
+  handleShopeeCallback,
+  refreshShopeeAccessToken,
+  getShopeeOrders,
+} = require("../services/shopeeService");
 
 // =====================================================
-// 1. TẠO LINK OAUTH
+// HELPERS
+// =====================================================
+
+function getMessage(error) {
+  return (
+    error?.response?.data?.message ||
+    error?.response?.data?.error ||
+    error?.message ||
+    "Đã xảy ra lỗi khi xử lý Shopee"
+  );
+}
+
+function getAdminId(req) {
+  return req.user?._id || req.user?.id || null;
+}
+
+// =====================================================
+// 1. KẾT NỐI SHOPEE
 // POST /api/shopee/auth
 // =====================================================
 
 exports.connectShopee = async (req, res) => {
   try {
-    if (!REDIRECT_URI || !PARTNER_ID) {
-      return res.status(500).json({
-        success: false,
-        message: "Thiếu cấu hình Shopee",
-      });
-    }
-
-    const state = crypto.randomBytes(32).toString("hex");
-
-    await ShopeeOAuthState.create({
-      state,
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+    const authUrl = await getShopeeAuthUrl({
+      userId: getAdminId(req),
     });
 
-    // Gắn state vào callback URL để xác thực khi Shopee trả về
-    const redirectUrl = new URL(REDIRECT_URI);
-    redirectUrl.searchParams.set("state", state);
-
-    const authUrl = createAuthUrl(redirectUrl.toString());
-
-    console.log("========== SHOPEE OAUTH ==========");
-    console.log("Environment:", process.env.SHOPEE_ENV);
-    console.log("Partner ID:", PARTNER_ID);
-    console.log("Redirect URI:", REDIRECT_URI);
-    console.log(
-      "OAuth endpoint:",
-      new URL(authUrl).origin + new URL(authUrl).pathname,
-    );
-    console.log("==================================");
+    if (!authUrl) {
+      return res.status(400).json({
+        success: false,
+        message: "Không tạo được đường dẫn kết nối Shopee",
+      });
+    }
 
     return res.json({
       success: true,
       authUrl,
+      url: authUrl,
     });
   } catch (error) {
-    console.error("SHOPEE AUTH:", error.response?.data || error.message);
+    console.error("connectShopee:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Không thể tạo link Shopee",
+      message: getMessage(error),
     });
   }
 };
@@ -70,99 +60,82 @@ exports.connectShopee = async (req, res) => {
 // =====================================================
 // 2. SHOPEE CALLBACK
 // GET /api/shopee/callback
+//
+// Shopee gọi trực tiếp, không yêu cầu JWT.
 // =====================================================
 
 exports.shopeeCallback = async (req, res) => {
   try {
-    const { code, shop_id, state, error } = req.query;
+    const result = await handleShopeeCallback(req.query);
 
-    if (error) {
-      return res.redirect(`${FRONTEND_URL}/admin/settings?shopee=failed`);
+    const frontendUrl =
+      process.env.SHOPEE_FRONTEND_URL || "http://localhost:5173/admin";
+
+    if (result?.success === false) {
+      const redirectUrl = new URL(frontendUrl);
+
+      redirectUrl.searchParams.set("shopee", "error");
+      redirectUrl.searchParams.set(
+        "message",
+        result.message || "Kết nối Shopee thất bại",
+      );
+
+      return res.redirect(redirectUrl.toString());
     }
 
-    if (!code || !shop_id || !state) {
-      return res.status(400).send("Missing Shopee OAuth parameters");
+    const redirectUrl = new URL(frontendUrl);
+
+    redirectUrl.searchParams.set("shopee", "success");
+
+    if (result?.shopId) {
+      redirectUrl.searchParams.set("shopId", String(result.shopId));
     }
 
-    const stateRecord = await ShopeeOAuthState.findOneAndDelete({
-      state,
-      expiresAt: { $gt: new Date() },
-    });
-
-    if (!stateRecord) {
-      return res.status(400).send("Invalid or expired OAuth state");
-    }
-
-    const shopId = String(shop_id);
-
-    if (!/^\d+$/.test(shopId)) {
-      return res.status(400).send("Invalid shop ID");
-    }
-
-    const tokenData = await getAccessToken(code, shopId);
-
-    if (!tokenData.access_token || !tokenData.refresh_token) {
-      throw new Error("Shopee token response is incomplete");
-    }
-
-    const expiresIn = Number(tokenData.expire_in);
-
-    await ShopeeShop.findOneAndUpdate(
-      { shopId },
-      {
-        $set: {
-          accessToken: tokenData.access_token,
-          refreshToken: tokenData.refresh_token,
-          accessTokenExpiresAt: new Date(
-            Date.now() + (expiresIn || 14400) * 1000,
-          ),
-          status: "connected",
-          lastConnectedAt: new Date(),
-        },
-      },
-      {
-        upsert: true,
-        new: true,
-        runValidators: true,
-      },
-    );
-
-    return res.redirect(`${FRONTEND_URL}/admin/settings?shopee=connected`);
+    return res.redirect(redirectUrl.toString());
   } catch (error) {
-    console.error("SHOPEE CALLBACK:", error.response?.data || error.message);
+    console.error("shopeeCallback:", error);
 
-    return res.redirect(`${FRONTEND_URL}/admin/settings?shopee=failed`);
+    const frontendUrl =
+      process.env.SHOPEE_FRONTEND_URL || "http://localhost:5173/admin";
+
+    const redirectUrl = new URL(frontendUrl);
+
+    redirectUrl.searchParams.set("shopee", "error");
+    redirectUrl.searchParams.set("message", getMessage(error));
+
+    return res.redirect(redirectUrl.toString());
   }
 };
 
 // =====================================================
-// 3. DANH SÁCH SHOP
+// 3. DANH SÁCH SHOP ĐÃ KẾT NỐI
 // GET /api/shopee/shops
 // =====================================================
 
 exports.getShopeeShops = async (req, res) => {
   try {
-    const shops = await ShopeeShop.find()
-      .select(
-        "shopId status accessTokenExpiresAt lastConnectedAt lastRefreshedAt createdAt",
-      )
+    const shops = await ShopeeShop.find({})
+      .select("-accessToken -refreshToken -refreshTokenExpiresAt")
       .sort({ createdAt: -1 })
       .lean();
 
     return res.json({
       success: true,
       data: shops,
+      shops,
     });
   } catch (error) {
+    console.error("getShopeeShops:", error);
+
     return res.status(500).json({
       success: false,
-      message: error.message,
+      message: getMessage(error),
     });
   }
 };
 
 // =====================================================
-// 4. REFRESH TOKEN
+// 4. LÀM MỚI ACCESS TOKEN
 // POST /api/shopee/refresh-token
 // =====================================================
 
@@ -173,58 +146,23 @@ exports.refreshShopeeToken = async (req, res) => {
     if (!shopId) {
       return res.status(400).json({
         success: false,
-        message: "Thiếu shopId",
+        message: "Vui lòng cung cấp shopId",
       });
     }
 
-    const shop = await ShopeeShop.findOne({
-      shopId: String(shopId),
-      status: "connected",
-    }).select("+accessToken +refreshToken");
-
-    if (!shop) {
-      return res.status(404).json({
-        success: false,
-        message: "Không tìm thấy shop Shopee",
-      });
-    }
-
-    const tokenData = await refreshAccessToken(shop.refreshToken, shop.shopId);
-
-    if (!tokenData.access_token || !tokenData.refresh_token) {
-      throw new Error("Invalid refresh response");
-    }
-
-    shop.accessToken = tokenData.access_token;
-    shop.refreshToken = tokenData.refresh_token;
-
-    shop.accessTokenExpiresAt = new Date(
-      Date.now() + Number(tokenData.expire_in || 14400) * 1000,
-    );
-
-    shop.refreshTokenExpiresAt = new Date(
-      Date.now() + 30 * 24 * 60 * 60 * 1000,
-    );
-
-    shop.lastRefreshedAt = new Date();
-
-    await shop.save();
+    const result = await refreshShopeeAccessToken(String(shopId));
 
     return res.json({
       success: true,
-      message: "Refresh token thành công",
-      data: {
-        shopId: shop.shopId,
-        accessTokenExpiresAt: shop.accessTokenExpiresAt,
-      },
+      message: "Làm mới token thành công",
+      data: result,
     });
   } catch (error) {
-    console.error("SHOPEE REFRESH:", error.response?.data || error.message);
+    console.error("refreshShopeeToken:", error);
 
-    return res.status(500).json({
+    return res.status(400).json({
       success: false,
-      message: "Refresh token thất bại",
-      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+      message: getMessage(error),
     });
   }
 };
@@ -236,93 +174,47 @@ exports.refreshShopeeToken = async (req, res) => {
 
 exports.disconnectShopeeShop = async (req, res) => {
   try {
-    const shop = await ShopeeShop.findOneAndUpdate(
-      {
-        shopId: String(req.params.shopId),
-      },
-      {
-        $set: {
-          status: "disconnected",
-        },
-        $unset: {
-          accessToken: 1,
-          refreshToken: 1,
-        },
-      },
-      { new: true },
-    );
+    const { shopId } = req.params;
+
+    if (!shopId) {
+      return res.status(400).json({
+        success: false,
+        message: "Thiếu shopId",
+      });
+    }
+
+    const shop = await ShopeeShop.findOneAndDelete({
+      shopId: String(shopId),
+    });
 
     if (!shop) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy shop",
+        message: "Không tìm thấy shop Shopee",
       });
     }
 
     return res.json({
       success: true,
-      message: "Đã ngắt kết nối Shopee",
+      message: "Đã ngắt kết nối shop Shopee",
     });
   } catch (error) {
+    console.error("disconnectShopeeShop:", error);
+
     return res.status(500).json({
       success: false,
-      message: error.message,
+      message: getMessage(error),
     });
   }
 };
 
 // =====================================================
-// 6. XEM ĐƠN HÀNG SHOPEE
+// 6. XEM / ĐỒNG BỘ ĐƠN SHOPEE
 // POST /api/shopee/orders/sync
-// Không lưu MongoDB, không trừ tồn kho
+//
+// Chỉ lấy dữ liệu để hiển thị.
+// Không trừ tồn kho.
 // =====================================================
-
-// Chuyển ngày frontend thành Unix timestamp (giây)
-const parseShopeeTime = (value, isEnd = false) => {
-  if (value === undefined || value === null || value === "") {
-    return NaN;
-  }
-
-  const str = String(value).trim();
-
-  // Trường hợp YYYY-MM-DD
-  const dateMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-
-  if (dateMatch) {
-    const [, year, month, day] = dateMatch.map(Number);
-
-    // Kiểm tra ngày hợp lệ
-    const check = new Date(Date.UTC(year, month - 1, day));
-
-    if (
-      check.getUTCFullYear() !== year ||
-      check.getUTCMonth() !== month - 1 ||
-      check.getUTCDate() !== day
-    ) {
-      return NaN;
-    }
-
-    // Việt Nam UTC+7
-    const date = isEnd
-      ? new Date(`${str}T23:59:59+07:00`)
-      : new Date(`${str}T00:00:00+07:00`);
-
-    return Math.floor(date.getTime() / 1000);
-  }
-
-  // Trường hợp Unix timestamp
-  if (/^\d+$/.test(str)) {
-    const timestamp = Number(str);
-
-    // Nếu là milliseconds thì chuyển sang seconds
-    return timestamp > 9999999999 ? Math.floor(timestamp / 1000) : timestamp;
-  }
-
-  // Trường hợp ISO datetime
-  const parsed = new Date(str).getTime();
-
-  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : NaN;
-};
 
 exports.viewShopeeOrders = async (req, res) => {
   try {
@@ -343,15 +235,22 @@ exports.viewShopeeOrders = async (req, res) => {
       });
     }
 
-    // 1. Chuyển đổi ngày
-    const from = parseShopeeTime(timeFrom, false);
-    const to = parseShopeeTime(timeTo, true);
+    if (!timeFrom || !timeTo) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng chọn khoảng thời gian",
+      });
+    }
+
+    const from = Number(timeFrom);
+    const to = Number(timeTo);
 
     if (
       !Number.isFinite(from) ||
       !Number.isFinite(to) ||
       from <= 0 ||
-      to <= from
+      to <= 0 ||
+      from > to
     ) {
       return res.status(400).json({
         success: false,
@@ -359,95 +258,28 @@ exports.viewShopeeOrders = async (req, res) => {
       });
     }
 
-    // 2. Kiểm tra giới hạn 15 ngày
-    if (to - from > 15 * 24 * 60 * 60) {
-      return res.status(400).json({
-        success: false,
-        message: "Mỗi lần xem chỉ được chọn tối đa 15 ngày",
-      });
-    }
+    const limit = Math.min(Math.max(Number(pageSize) || 50, 1), 100);
 
-    // 3. Kiểm tra loại thời gian
-    if (!["create_time", "update_time"].includes(timeRangeField)) {
-      return res.status(400).json({
-        success: false,
-        message: "timeRangeField không hợp lệ",
-      });
-    }
-
-    // 4. Tìm shop
-    const shop = await ShopeeShop.findOne({
+    const result = await getShopeeOrders({
       shopId: String(shopId),
-      status: "connected",
-    }).select("+accessToken");
-
-    if (!shop) {
-      return res.status(404).json({
-        success: false,
-        message: "Shop Shopee chưa kết nối hoặc không tồn tại",
-      });
-    }
-
-    // 5. Lấy danh sách mã đơn
-    const listResult = await getOrderList(shop.accessToken, shop.shopId, {
       timeFrom: from,
       timeTo: to,
-      pageSize: Math.min(Math.max(Number(pageSize) || 50, 1), 100),
-      cursor,
+      pageSize: limit,
+      cursor: String(cursor || ""),
       timeRangeField,
-      orderStatus,
+      orderStatus: orderStatus || undefined,
     });
 
-    const listData = listResult.response || {};
-
-    const orderSnList = (listData.order_list || [])
-      .map((item) => item.order_sn)
-      .filter(Boolean);
-
-    // 6. Không có đơn hàng
-    if (!orderSnList.length) {
-      return res.json({
-        success: true,
-        message: "Không tìm thấy đơn hàng",
-        data: [],
-        pagination: {
-          more: Boolean(listData.more),
-          nextCursor: listData.next_cursor || "",
-          pageSize: 0,
-        },
-      });
-    }
-
-    // 7. Lấy chi tiết đơn hàng
-    const detailResult = await getOrderDetail(
-      shop.accessToken,
-      shop.shopId,
-      orderSnList,
-    );
-
-    const orders = detailResult.response?.order_list || [];
-
-    // 8. Trả kết quả
     return res.json({
       success: true,
-      message: "Lấy đơn hàng Shopee thành công",
-      data: orders,
-      pagination: {
-        more: Boolean(listData.more),
-        nextCursor: listData.next_cursor || "",
-        pageSize: orderSnList.length,
-      },
+      data: result,
     });
   } catch (error) {
-    console.error("SHOPEE VIEW ORDERS:", error.response?.data || error.message);
+    console.error("viewShopeeOrders:", error);
 
-    return res.status(500).json({
+    return res.status(400).json({
       success: false,
-      message: "Không thể lấy đơn hàng Shopee",
-      error:
-        process.env.NODE_ENV === "development"
-          ? error.response?.data || error.message
-          : undefined,
+      message: getMessage(error),
     });
   }
 };

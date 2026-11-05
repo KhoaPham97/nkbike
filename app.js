@@ -33,6 +33,8 @@ const vehicleRoutes = require("./src/routes/vehicleRoutes");
 const inventoryBatchRoutes = require("./src/routes/inventoryBatch");
 const costRoutes = require("./src/routes/costRoutes");
 const shopeeRouter = require("./src/routes/shopeeRouter");
+const shopeeManagementRouter = require("./src/routes/shopeeManagementRouter");
+const shopeeInventoryRouter = require("./src/routes/shopeeInventoryRouter");
 
 app.use(cors());
 
@@ -59,4 +61,6 @@ app.use("/api/vehicles", vehicleRoutes);
 app.use("/api/inventory-batch", inventoryBatchRoutes);
 app.use("/api/admin/cost-management", costRoutes);
 app.use("/api/shopee", shopeeRouter);
+app.use("/api/shopee/management", shopeeManagementRouter);
+app.use("/api/shopee/inventory", shopeeInventoryRouter);
 module.exports = app;
