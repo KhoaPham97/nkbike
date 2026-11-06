@@ -29,7 +29,21 @@ const normalizeCompatibleVehicles = (value) => {
 
   return [];
 };
+// =====================================================
+// NORMALIZE VARIANT
+// =====================================================
 
+const normalizeVariantNumber = (value, fallback = 0) => {
+  const number = Number(value);
+
+  return Number.isFinite(number) && number >= 0 ? number : fallback;
+};
+
+const normalizeVariantPackageQuantity = (value) => {
+  const number = Number(value);
+
+  return Number.isInteger(number) && number >= 1 ? number : 1;
+};
 module.exports = {
   // =====================================================
   // LIST ALL PRODUCT
@@ -254,89 +268,99 @@ module.exports = {
   // =====================================================
   // CREATE PRODUCT
   // =====================================================
+  // =====================================================
+  // CREATE PRODUCT
+  // =====================================================
+
   async createProduct(req, res) {
     try {
-      const data = req.body;
+      const data = req.body || {};
 
-      // =====================================================
-      // COMPATIBLE VEHICLES
-      // Luôn lưu dạng array
-      // =====================================================
       const compatibleVehicles = normalizeCompatibleVehicles(
         data.compatibleVehicles,
       );
 
-      // =====================================================
-      // VARIANTS
-      // =====================================================
       const variants = Array.isArray(data.variants)
         ? data.variants.map((variant) => ({
-            name: variant.name || "",
+            name: String(variant.name || "").trim(),
 
-            price: String(variant.price || "0"),
+            // Không nhận mã từ frontend.
+            // Model tự sinh variantCode và sku.
 
-            defaultPrice: String(variant.defaultPrice || "0"),
+            price: String(variant.price ?? "0"),
 
-            unitCost: Math.max(0, Number(variant.unitCost) || 0),
+            defaultPrice: String(variant.defaultPrice ?? "0"),
 
-            qty: Number(variant.qty || 0),
+            unitCost: normalizeVariantNumber(variant.unitCost),
 
-            // =====================================
-            // CÂN NẶNG VARIANT - KG
-            // =====================================
-            weight: Number(variant.weight || 0),
-            packageQuantity: Number(variant.packageQuantity || 1),
+            weight: normalizeVariantNumber(variant.weight),
+
+            qty: normalizeVariantNumber(variant.qty),
+
+            // reservedQty do hệ thống đơn hàng quản lý.
+            reservedQty: 0,
+
+            packageQuantity: normalizeVariantPackageQuantity(
+              variant.packageQuantity,
+            ),
+
+            thumbnail: String(variant.thumbnail || ""),
+
+            image: String(variant.image || ""),
           }))
         : [];
 
       // =====================================================
-      // TÍNH QTY TỪ VARIANTS
+      // TÍNH TỔNG TỒN KHO
       // =====================================================
-      const totalQty = variants.reduce((total, variant) => {
-        return total + (Number(variant.qty) || 0);
-      }, 0);
+
+      const totalQty =
+        variants.length > 0
+          ? variants.reduce((total, variant) => total + variant.qty, 0)
+          : normalizeVariantNumber(data.qty);
 
       // =====================================================
-      // CREATE
+      // CREATE PRODUCT
       // =====================================================
+
       const product = new Product({
-        title: data.title,
+        title: String(data.title || "").trim(),
 
-        price: data.price || "0",
+        price: String(data.price ?? "0"),
 
-        rating: Number(data.rating || 0),
+        rating: normalizeVariantNumber(data.rating, 5),
 
-        originalPrice: data.originalPrice || "",
+        originalPrice: String(data.originalPrice ?? "0"),
 
-        thumbnail: data.thumbnail || "",
+        thumbnail: String(data.thumbnail || ""),
 
-        images: Array.isArray(data.images) ? data.images : [],
+        images: Array.isArray(data.images)
+          ? data.images.filter((item) => typeof item === "string")
+          : [],
 
-        detail: data.detail || "",
+        detail: String(data.detail || ""),
 
-        description: data.description || "",
+        description: String(data.description || ""),
 
         qty: totalQty,
 
-        stock: data.stock !== undefined ? data.stock : String(totalQty),
+        stock: String(totalQty),
 
-        brand: data.brand || "",
+        brand: String(data.brand || ""),
 
         categoryId: data.categoryId || null,
 
-        category: data.category || "",
+        category: String(data.category || ""),
 
-        type: data.type || "1",
+        type: ["1", "2", "3"].includes(String(data.type))
+          ? String(data.type)
+          : "1",
 
-        // =================================================
-        // XE TƯƠNG THÍCH
-        // =================================================
         compatibleVehicles,
 
-        // =================================================
-        // VARIANTS
-        // =================================================
         variants,
+
+        isVisible: data.isVisible !== false,
 
         created_at: new Date(),
 
@@ -426,8 +450,26 @@ module.exports = {
   // =====================================================
   // UPDATE PRODUCT
   // =====================================================
-  async updateProductAsync(req, res, next) {
+  // =====================================================
+  // UPDATE PRODUCT
+  // =====================================================
+
+  // =====================================================
+  // UPDATE PRODUCT
+  // BẢO VỆ VARIANT CODE, SKU, RESERVED QTY
+  // =====================================================
+
+  async updateProductAsync(req, res) {
     try {
+      const updates = Array.isArray(req.body) ? req.body : [req.body];
+
+      if (!updates.length) {
+        return res.status(400).json({
+          success: false,
+          message: "Không có dữ liệu cập nhật",
+        });
+      }
+
       const allowedFields = [
         "title",
         "images",
@@ -443,130 +485,249 @@ module.exports = {
         "variants",
         "type",
         "isVisible",
-
-        // =================================================
-        // XE TƯƠNG THÍCH
-        // =================================================
         "compatibleVehicles",
       ];
 
-      // =====================================================
-      // KIỂM TRA ARRAY
-      // =====================================================
-      if (!Array.isArray(req.body)) {
-        return res.status(400).json({
-          success: false,
-          message: "Dữ liệu cập nhật phải là một mảng sản phẩm",
-        });
-      }
+      const results = await Promise.all(
+        updates.map(async (item) => {
+          const productId = item._id || item.id;
 
-      await Promise.all(
-        req.body.map(async (productData) => {
-          // =================================================
-          // FIND PRODUCT
-          // =================================================
-          const product = await Product.findById(productData._id);
+          if (!productId) {
+            throw new Error("Thiếu ID sản phẩm");
+          }
+
+          const product = await Product.findById(productId);
 
           if (!product) {
-            throw new Error(`Không tìm thấy sản phẩm: ${productData._id}`);
+            throw new Error(`Không tìm thấy sản phẩm: ${productId}`);
           }
 
-          // ================================================
-          // KIỂM TRA TYPE
-          // ================================================
+          // =================================================
+          // VALIDATE TYPE
+          // =================================================
+
           if (
-            productData.type !== undefined &&
-            !["1", "2", "3"].includes(String(productData.type))
+            item.type !== undefined &&
+            !["1", "2", "3"].includes(String(item.type))
           ) {
-            throw new Error(
-              `Type không hợp lệ cho sản phẩm: ${productData._id}. Type phải là 1, 2 hoặc 3`,
-            );
+            throw new Error("Loại sản phẩm không hợp lệ");
           }
 
-          // ================================================
-          // CẬP NHẬT FIELD
-          // ================================================
-          allowedFields.forEach((field) => {
-            if (productData[field] !== undefined) {
-              product[field] = productData[field];
+          // =================================================
+          // UPDATE PRODUCT FIELDS
+          // =================================================
+
+          for (const field of allowedFields) {
+            if (
+              !Object.prototype.hasOwnProperty.call(item, field) ||
+              field === "variants"
+            ) {
+              continue;
             }
-          });
 
-          // ================================================
-          // CHUẨN HÓA TYPE
-          // ================================================
-          if (productData.type !== undefined) {
-            product.type = String(productData.type);
+            if (field === "compatibleVehicles") {
+              product.compatibleVehicles = normalizeCompatibleVehicles(
+                item.compatibleVehicles,
+              );
+              continue;
+            }
+
+            product[field] = item[field];
           }
 
-          // ================================================
-          // CHUẨN HÓA XE TƯƠNG THÍCH
-          // ================================================
-          if (productData.compatibleVehicles !== undefined) {
-            product.compatibleVehicles = normalizeCompatibleVehicles(
-              productData.compatibleVehicles,
+          // =================================================
+          // UPDATE VARIANTS
+          // =================================================
+
+          if (Array.isArray(item.variants)) {
+            const oldVariants = product.variants || [];
+            const incomingVariants = item.variants;
+
+            const usedOldIndexes = new Set();
+
+            const getText = (value) => String(value ?? "").trim();
+
+            const findOldVariant = (incoming, index) => {
+              const incomingId = getText(incoming._id);
+              const incomingCode = getText(incoming.variantCode);
+              const incomingSku = getText(incoming.sku);
+              const incomingName = getText(incoming.name);
+
+              // 1. Khớp MongoDB subdocument ID
+              if (incomingId) {
+                const foundIndex = oldVariants.findIndex(
+                  (old, oldIndex) =>
+                    !usedOldIndexes.has(oldIndex) &&
+                    getText(old._id) === incomingId,
+                );
+
+                if (foundIndex !== -1) return foundIndex;
+              }
+
+              // 2. Khớp variantCode
+              if (incomingCode) {
+                const foundIndex = oldVariants.findIndex(
+                  (old, oldIndex) =>
+                    !usedOldIndexes.has(oldIndex) &&
+                    getText(old.variantCode) === incomingCode,
+                );
+
+                if (foundIndex !== -1) return foundIndex;
+              }
+
+              // 3. Khớp SKU
+              if (incomingSku) {
+                const foundIndex = oldVariants.findIndex(
+                  (old, oldIndex) =>
+                    !usedOldIndexes.has(oldIndex) &&
+                    getText(old.sku) === incomingSku,
+                );
+
+                if (foundIndex !== -1) return foundIndex;
+              }
+
+              // 4. Khớp tên chính xác
+              if (incomingName) {
+                const foundIndex = oldVariants.findIndex(
+                  (old, oldIndex) =>
+                    !usedOldIndexes.has(oldIndex) &&
+                    getText(old.name) === incomingName,
+                );
+
+                if (foundIndex !== -1) return foundIndex;
+              }
+
+              // 5. Dự phòng khi số lượng variant không đổi
+              // Trường hợp đổi tên nhưng FE chưa gửi _id/mã
+              if (
+                oldVariants.length === incomingVariants.length &&
+                oldVariants[index] &&
+                !usedOldIndexes.has(index)
+              ) {
+                return index;
+              }
+
+              return -1;
+            };
+
+            const newVariants = incomingVariants.map((incoming, index) => {
+              const oldIndex = findOldVariant(incoming, index);
+
+              const old = oldIndex !== -1 ? oldVariants[oldIndex] : null;
+
+              if (oldIndex !== -1) {
+                usedOldIndexes.add(oldIndex);
+              }
+
+              const qty = normalizeVariantNumber(incoming.qty, old?.qty ?? 0);
+
+              const reservedQty = Number(old?.reservedQty || 0);
+
+              // Không cho tồn kho thấp hơn số lượng đang giữ chỗ
+              if (qty < reservedQty) {
+                throw new Error(
+                  `Variant "${incoming.name || old?.name}" có ${reservedQty} sản phẩm đang giữ chỗ. Không thể cập nhật tồn kho xuống ${qty}.`,
+                );
+              }
+
+              return {
+                // Giữ ID subdocument cũ
+                ...(old?._id ? { _id: old._id } : {}),
+
+                name: incoming.name ?? old?.name ?? "",
+
+                // Mã cũ luôn được ưu tiên
+                // Variant mới không nhận mã từ FE
+                ...(old
+                  ? {
+                      variantCode: old.variantCode,
+                      sku: old.sku,
+                    }
+                  : {}),
+
+                price: incoming.price ?? old?.price ?? "0",
+
+                defaultPrice: incoming.defaultPrice ?? old?.defaultPrice ?? "0",
+
+                unitCost: normalizeVariantNumber(
+                  incoming.unitCost,
+                  old?.unitCost ?? 0,
+                ),
+
+                qty,
+
+                // Chỉ hệ thống đơn hàng được quản lý reservedQty
+                reservedQty,
+
+                weight: normalizeVariantNumber(
+                  incoming.weight,
+                  old?.weight ?? 0,
+                ),
+
+                packageQuantity: normalizeVariantPackageQuantity(
+                  incoming.packageQuantity ?? old?.packageQuantity,
+                ),
+
+                thumbnail: incoming.thumbnail ?? old?.thumbnail ?? "",
+
+                image: incoming.image ?? old?.image ?? "",
+              };
+            });
+
+            // =================================================
+            // KIỂM TRA VARIANT BỊ XÓA
+            // =================================================
+
+            for (let i = 0; i < oldVariants.length; i++) {
+              if (usedOldIndexes.has(i)) continue;
+
+              const old = oldVariants[i];
+              const reservedQty = Number(old.reservedQty || 0);
+
+              if (reservedQty > 0) {
+                throw new Error(
+                  `Không thể xóa variant "${old.name}" vì đang có ${reservedQty} sản phẩm được giữ chỗ.`,
+                );
+              }
+            }
+
+            // =================================================
+            // SAVE VARIANTS
+            // =================================================
+
+            product.variants = newVariants;
+
+            // Tổng tồn kho theo variants
+            product.qty = newVariants.reduce(
+              (total, variant) => total + (Number(variant.qty) || 0),
+              0,
             );
+
+            product.stock = String(product.qty);
           }
 
-          // ================================================
-          // CHUẨN HÓA VARIANTS
-          // ================================================
-          if (Array.isArray(productData.variants)) {
-            product.variants = productData.variants.map((variant, index) => ({
-              name: variant.name || "",
-
-              price: String(variant.price || "0"),
-
-              defaultPrice: String(variant.defaultPrice || "0"),
-
-              // Giữ giá vốn hiện tại nếu FE cũ chưa gửi unitCost
-              unitCost:
-                variant.unitCost !== undefined
-                  ? Math.max(0, Number(variant.unitCost) || 0)
-                  : Number(product.variants?.[index]?.unitCost || 0),
-
-              qty: Number(variant.qty || 0),
-
-              // ==========================================
-              // CÂN NẶNG VARIANT - KG
-              // ==========================================
-              weight: Number(variant.weight || 0),
-              packageQuantity: Number(variant.packageQuantity || 1),
-            }));
-          }
-
-          // ================================================
-          // TỰ ĐỘNG TÍNH TỔNG QTY
-          // ================================================
-          if (Array.isArray(product.variants)) {
-            product.qty = product.variants.reduce((total, variant) => {
-              return total + (Number(variant.qty) || 0);
-            }, 0);
-          }
-
-          // ================================================
-          // UPDATED AT
-          // ================================================
           product.updated_at = new Date();
+
           await product.save();
+
+          return product;
         }),
       );
 
       return res.status(200).json({
         success: true,
-        message: "Successfully updated products",
-        total: req.body.length,
+        message: "Cập nhật sản phẩm thành công",
+        products: results,
       });
     } catch (error) {
-      console.error("updateProductAsync:", error);
+      console.error("Update product error:", error);
 
       return res.status(500).json({
         success: false,
-        message: error.message,
+        message: error.message || "Lỗi cập nhật sản phẩm",
       });
     }
   },
-
   // =====================================================
   // DELETE PRODUCT
   // =====================================================

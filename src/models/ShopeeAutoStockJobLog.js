@@ -1,47 +1,139 @@
 const mongoose = require("mongoose");
 
-const shopeeAutoStockSettingsSchema = new mongoose.Schema(
+const shopeeAutoStockJobResultSchema = new mongoose.Schema(
   {
-    _id: {
+    shopId: {
       type: String,
-      default: "SHOPEE_AUTO_STOCK_SETTINGS",
+      default: "",
+      index: true,
     },
 
-    enabled: {
-      type: Boolean,
-      default: false,
+    orderSn: {
+      type: String,
+      default: "",
+      index: true,
     },
 
-    intervalMinutes: {
-      type: Number,
-      enum: [1, 5, 10, 15, 30, 60],
-      default: 5,
+    status: {
+      type: String,
+      enum: ["success", "failed", "skipped", "partial"],
+      default: "skipped",
     },
 
-    batchSize: {
-      type: Number,
-      default: 100,
-      min: 1,
-      max: 500,
+    stockStatus: {
+      type: String,
+      enum: [
+        "pending",
+        "ready",
+        "deducted",
+        "partially_deducted",
+        "blocked",
+        "failed",
+        "unmapped",
+      ],
+      default: "pending",
     },
 
-    lastRunAt: {
+    message: {
+      type: String,
+      default: "",
+    },
+
+    processedAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  {
+    _id: false,
+  },
+);
+
+const shopeeAutoStockJobLogSchema = new mongoose.Schema(
+  {
+    // Loại chạy: cron hoặc manual
+    trigger: {
+      type: String,
+      enum: ["cron", "manual"],
+      default: "cron",
+      index: true,
+    },
+
+    // Trạng thái tổng thể của lần chạy
+    status: {
+      type: String,
+      enum: ["running", "completed", "partial", "failed", "skipped"],
+      default: "running",
+      index: true,
+    },
+
+    startedAt: {
+      type: Date,
+      default: Date.now,
+      index: true,
+    },
+
+    finishedAt: {
       type: Date,
       default: null,
     },
 
-    updatedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "admins",
-      default: null,
+    durationMs: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    scannedOrders: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    successCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    failedCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    skippedCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    partialCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    error: {
+      type: String,
+      default: "",
+    },
+
+    results: {
+      type: [shopeeAutoStockJobResultSchema],
+      default: [],
     },
   },
   {
     timestamps: true,
     versionKey: false,
+    collection: "shopeeautostockjoblogs",
   },
 );
 
+shopeeAutoStockJobLogSchema.index({ startedAt: -1 });
+shopeeAutoStockJobLogSchema.index({ trigger: 1, startedAt: -1 });
+
 module.exports =
-  mongoose.models.ShopeeAutoStockSettings ||
-  mongoose.model("ShopeeAutoStockSettings", shopeeAutoStockSettingsSchema);
+  mongoose.models.ShopeeAutoStockJobLog ||
+  mongoose.model("ShopeeAutoStockJobLog", shopeeAutoStockJobLogSchema);

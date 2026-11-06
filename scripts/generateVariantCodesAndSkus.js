@@ -5,87 +5,61 @@ require("../src/db/mongoose");
 
 const { Product } = require("../src/models/products");
 
-async function waitForDatabase() {
-  if (mongoose.connection.readyState === 1) return;
+const VARIANT_PREFIX = "NK-";
+const SKU_PREFIX = "SKU-";
+const START_NUMBER = 1;
 
-  await new Promise((resolve, reject) => {
-    mongoose.connection.once("connected", resolve);
-    mongoose.connection.once("error", reject);
-  });
-}
-
-async function run() {
-  let updatedProducts = 0;
-  let generatedVariantCodes = 0;
-  let generatedSkus = 0;
-  let skippedVariants = 0;
-
+async function main() {
   try {
-    await waitForDatabase();
-
-    console.log("MongoDB connected:", mongoose.connection.name);
+    await mongoose.connection.asPromise();
 
     const products = await Product.find({
       variants: { $exists: true, $ne: [] },
-    });
+    }).lean();
 
-    console.log("Tổng sản phẩm:", products.length);
+    let counter = START_NUMBER;
+    let totalVariants = 0;
+    let updatedProducts = 0;
 
     for (const product of products) {
-      let changed = false;
+      const variants = (product.variants || []).map((variant) => {
+        const number = counter++;
 
-      for (const variant of product.variants) {
-        let needsSave = false;
+        totalVariants++;
 
-        if (!variant.variantCode || !String(variant.variantCode).trim()) {
-          variant.variantCode = null;
-          generatedVariantCodes++;
-          needsSave = true;
-        }
+        return {
+          ...variant,
+          variantCode: `${VARIANT_PREFIX}${number}`,
+          sku: `${SKU_PREFIX}${number}`,
+        };
+      });
 
-        if (!variant.sku || !String(variant.sku).trim()) {
-          variant.sku = null;
-          generatedSkus++;
-          needsSave = true;
-        }
+      if (!variants.length) continue;
 
-        if (needsSave) {
-          changed = true;
-        } else {
-          skippedVariants++;
-        }
-      }
+      const result = await Product.collection.updateOne(
+        { _id: product._id },
+        {
+          $set: { variants },
+        },
+      );
 
-      if (changed) {
-        // Hook pre-validate tự sinh cả hai mã còn thiếu
-        await product.save();
+      if (result.modifiedCount > 0) {
         updatedProducts++;
-
-        console.log(
-          "Đã cập nhật:",
-          product.title,
-          "|",
-          product.variants.length,
-          "biến thể",
-        );
       }
+
+      console.log(`Updated: ${product.title || product.name || product._id}`);
     }
 
-    console.log("\n========== KẾT QUẢ SYNC ==========");
-    console.log("Tổng sản phẩm:", products.length);
-    console.log("Sản phẩm cập nhật:", updatedProducts);
-    console.log("VariantCode đã tạo:", generatedVariantCodes);
-    console.log("SKU đã tạo:", generatedSkus);
-    console.log("Biến thể đã đủ mã:", skippedVariants);
-    console.log("==================================");
+    console.log("\n========== COMPLETE ==========");
+    console.log("Products:", updatedProducts);
+    console.log("Variants:", totalVariants);
+    console.log("Last number:", counter - 1);
+    console.log("================================");
   } catch (error) {
-    console.error("SYNC ERROR:", error);
-    process.exitCode = 1;
+    console.error("ERROR:", error);
   } finally {
-    if (mongoose.connection.readyState !== 0) {
-      await mongoose.disconnect();
-    }
+    await mongoose.disconnect();
   }
 }
 
-run();
+main();

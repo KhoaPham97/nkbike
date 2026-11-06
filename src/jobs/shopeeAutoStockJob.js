@@ -11,18 +11,104 @@ const {
   refreshShopeeOrderMappings,
 } = require("../services/shopeeAutoSyncService");
 
+// =====================================================
+// GLOBAL STATE
+// =====================================================
+
 let scheduledTask = null;
-let currentInterval = null;
 let isRunning = false;
+let configuringJob = false;
 
 const LOCK_ID = "SHOPEE_AUTO_STOCK";
+
 const LOCK_DURATION_MS = 30 * 60 * 1000;
+const LOCK_RENEW_INTERVAL_MS = 60 * 1000;
+
+const ALLOWED_INTERVALS = [1, 5, 10, 15, 30, 60];
+
+// =====================================================
+// COMMON HELPERS
+// =====================================================
 
 function getIntervalExpression(minutes) {
-  const allowed = [1, 5, 10, 15, 30, 60];
-  const value = allowed.includes(Number(minutes)) ? Number(minutes) : 5;
+  const interval = Number(minutes);
 
-  return value === 60 ? "0 * * * *" : `*/${value} * * * *`;
+  if (interval === 60) {
+    return "0 * * * *";
+  }
+
+  if (ALLOWED_INTERVALS.includes(interval)) {
+    return `*/${interval} * * * *`;
+  }
+
+  return "*/5 * * * *";
+}
+
+function normalizeBatchSize(value) {
+  const number = Number(value);
+
+  if (!Number.isFinite(number) || number <= 0) {
+    return 100;
+  }
+
+  return Math.max(1, Math.min(Math.floor(number), 500));
+}
+
+function normalizeEnabled(value, fallback = false) {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+
+  if (value === true || value === 1 || value === "1" || value === "true") {
+    return true;
+  }
+
+  if (value === false || value === 0 || value === "0" || value === "false") {
+    return false;
+  }
+
+  return fallback;
+}
+
+function normalizeInterval(value, fallback = 5) {
+  const interval = Number(value);
+
+  return ALLOWED_INTERVALS.includes(interval) ? interval : fallback;
+}
+
+// =====================================================
+// GET SETTINGS - SINGLETON
+// =====================================================
+
+async function getAutoStockSettings() {
+  try {
+    return await ShopeeAutoStockSettings.findOneAndUpdate(
+      { _id: LOCK_ID },
+      {
+        $setOnInsert: {
+          enabled: false,
+          intervalMinutes: 5,
+          batchSize: 100,
+          lastRunAt: null,
+        },
+      },
+      {
+        new: true,
+        upsert: true,
+        setDefaultsOnInsert: true,
+      },
+    );
+  } catch (error) {
+    if (error.code === 11000) {
+      const existing = await ShopeeAutoStockSettings.findById(LOCK_ID);
+
+      if (existing) {
+        return existing;
+      }
+    }
+
+    throw error;
+  }
 }
 
 // =====================================================
@@ -45,7 +131,9 @@ async function acquireLock(ownerToken) {
       { upsert: true },
     );
   } catch (error) {
-    if (error.code !== 11000) throw error;
+    if (error.code !== 11000) {
+      throw error;
+    }
   }
 
   const lock = await ShopeeAutoStockJobLock.findOneAndUpdate(
@@ -71,7 +159,7 @@ async function acquireLock(ownerToken) {
 }
 
 async function renewLock(ownerToken) {
-  await ShopeeAutoStockJobLock.updateOne(
+  const result = await ShopeeAutoStockJobLock.updateOne(
     {
       _id: LOCK_ID,
       ownerToken,
@@ -82,10 +170,12 @@ async function renewLock(ownerToken) {
       },
     },
   );
+
+  return result.modifiedCount > 0;
 }
 
 async function releaseLock(ownerToken) {
-  await ShopeeAutoStockJobLock.updateOne(
+  return ShopeeAutoStockJobLock.updateOne(
     {
       _id: LOCK_ID,
       ownerToken,
@@ -105,11 +195,6 @@ async function releaseLock(ownerToken) {
 // =====================================================
 
 async function processOneOrder(order) {
-  const beforeQty = (order.items || []).reduce(
-    (sum, item) => sum + Number(item.deductedQty || 0),
-    0,
-  );
-
   try {
     if (String(order.orderStatus).toUpperCase() !== "COMPLETED") {
       return {
@@ -133,10 +218,9 @@ async function processOneOrder(order) {
       };
     }
 
-    // Lấy mapping mới nhất trước khi xuất kho.
+    // Cập nhật mapping mới nhất trước khi trừ kho.
     await refreshShopeeOrderMappings(order);
 
-    // Đọc lại dữ liệu mới nhất sau khi cập nhật mapping.
     const freshOrder = await ShopeeOrder.findById(order._id);
 
     if (!freshOrder) {
@@ -173,21 +257,24 @@ async function processOneOrder(order) {
       };
     }
 
-    const beforeFreshQty = eligibleItems.reduce(
+    const beforeQty = eligibleItems.reduce(
       (sum, item) => sum + Number(item.deductedQty || 0),
       0,
     );
 
-    // Tái sử dụng logic FIFO + transaction + idempotency hiện có.
+    // Sử dụng logic FIFO + transaction + idempotency hiện tại.
     const processed = await deductShopeeOrder(freshOrder);
+
+    if (!processed) {
+      throw new Error("Không nhận được kết quả xử lý trừ kho.");
+    }
 
     const afterQty = (processed.items || []).reduce(
       (sum, item) => sum + Number(item.deductedQty || 0),
       0,
     );
 
-    const deductedQty = Math.max(0, afterQty - beforeFreshQty);
-
+    const deductedQty = Math.max(0, afterQty - beforeQty);
     const stockStatus = processed.stockStatus || "pending";
 
     if (processed.stockDeducted || stockStatus === "deducted") {
@@ -243,18 +330,23 @@ async function processOrders({
   orderSns = null,
   batchSize = 100,
 } = {}) {
+  // Chặn chạy trùng trong cùng Node.js process.
   if (isRunning) {
     return {
+      success: false,
       skipped: true,
       message: "Auto Stock đang chạy trong tiến trình này.",
     };
   }
 
   const ownerToken = crypto.randomUUID();
+
+  // Khóa toàn hệ thống, kể cả nhiều Render instance.
   const locked = await acquireLock(ownerToken);
 
   if (!locked) {
     return {
+      success: false,
       skipped: true,
       message: "Auto Stock đang chạy ở một tiến trình khác.",
     };
@@ -264,15 +356,34 @@ async function processOrders({
 
   const startedAt = new Date();
 
-  const log = await ShopeeAutoStockJobLog.create({
-    trigger,
-    status: "running",
-    startedAt,
-  });
+  let log = null;
+  let heartbeat = null;
+  let lockLost = false;
 
   const results = [];
 
   try {
+    log = await ShopeeAutoStockJobLog.create({
+      trigger,
+      status: "running",
+      startedAt,
+    });
+
+    // Gia hạn lock định kỳ.
+    heartbeat = setInterval(async () => {
+      try {
+        const renewed = await renewLock(ownerToken);
+
+        if (!renewed) {
+          lockLost = true;
+
+          console.error("[Shopee Auto Stock] Không thể gia hạn lock.");
+        }
+      } catch (error) {
+        console.error("[Shopee Auto Stock] Lỗi gia hạn lock:", error);
+      }
+    }, LOCK_RENEW_INTERVAL_MS);
+
     const query = {
       orderStatus: "COMPLETED",
       stockDeducted: { $ne: true },
@@ -284,12 +395,25 @@ async function processOrders({
 
     const orders = await ShopeeOrder.find(query)
       .sort({ createTime: 1, _id: 1 })
-      .limit(Math.max(1, Math.min(Number(batchSize) || 100, 500)));
+      .limit(normalizeBatchSize(batchSize));
 
     for (const order of orders) {
-      await renewLock(ownerToken);
+      if (lockLost) {
+        throw new Error(
+          "Auto Stock mất quyền giữ lock. Đã dừng xử lý để tránh chạy trùng.",
+        );
+      }
+
+      const renewed = await renewLock(ownerToken);
+
+      if (!renewed) {
+        lockLost = true;
+
+        throw new Error("Không thể gia hạn lock Auto Stock.");
+      }
 
       const result = await processOneOrder(order);
+
       results.push(result);
     }
 
@@ -314,9 +438,13 @@ async function processOrders({
     let status = "completed";
 
     if (failedCount > 0 || partialCount > 0) {
-      status = successCount > 0 || skippedCount > 0 ? "partial" : "failed";
+      status =
+        successCount > 0 || skippedCount > 0 || partialCount > 0
+          ? "partial"
+          : "failed";
     }
 
+    // Lưu log kết quả.
     log.status = status;
     log.finishedAt = finishedAt;
     log.durationMs = finishedAt.getTime() - startedAt.getTime();
@@ -330,10 +458,14 @@ async function processOrders({
 
     await log.save();
 
-    await ShopeeAutoStockSettings.findOneAndUpdate(
-      { _id: "SHOPEE_AUTO_STOCK_SETTINGS" },
-      { $set: { lastRunAt: finishedAt } },
-      { upsert: true, setDefaultsOnInsert: true },
+    // Cập nhật thời điểm chạy gần nhất.
+    await ShopeeAutoStockSettings.updateOne(
+      { _id: LOCK_ID },
+      {
+        $set: {
+          lastRunAt: finishedAt,
+        },
+      },
     );
 
     return {
@@ -348,85 +480,244 @@ async function processOrders({
       results,
     };
   } catch (error) {
-    log.status = "failed";
-    log.error = error.message || "Auto Stock Job failed.";
-    log.finishedAt = new Date();
-    log.durationMs = log.finishedAt.getTime() - startedAt.getTime();
-    log.results = results;
+    console.error("[Shopee Auto Stock] Job error:", error);
 
-    await log.save().catch(console.error);
+    if (log) {
+      log.status = "failed";
+      log.error = error.message || "Auto Stock Job failed.";
+      log.finishedAt = new Date();
+      log.durationMs = log.finishedAt.getTime() - startedAt.getTime();
+      log.results = results;
+
+      await log.save().catch((saveError) => {
+        console.error("[Shopee Auto Stock] Không thể lưu log lỗi:", saveError);
+      });
+    }
 
     throw error;
   } finally {
+    if (heartbeat) {
+      clearInterval(heartbeat);
+    }
+
     isRunning = false;
-    await releaseLock(ownerToken).catch(console.error);
+
+    // Chỉ giải phóng lock của chính tiến trình này.
+    await releaseLock(ownerToken).catch((error) => {
+      console.error("[Shopee Auto Stock] Không thể giải phóng lock:", error);
+    });
   }
 }
 
 // =====================================================
-// RUN SCHEDULE
+// CONFIGURE CRON JOB
 // =====================================================
 
 async function configureShopeeAutoStockJob() {
-  const settings = await ShopeeAutoStockSettings.findById(
-    "SHOPEE_AUTO_STOCK_SETTINGS",
-  );
+  if (configuringJob) {
+    console.log(
+      "[Shopee Auto Stock] Đang cấu hình lịch, bỏ qua yêu cầu trùng.",
+    );
 
+    return {
+      success: false,
+      message: "Đang cấu hình lịch.",
+    };
+  }
+
+  configuringJob = true;
+
+  try {
+    const settings = await getAutoStockSettings();
+
+    console.log("[Shopee Auto Stock] Settings:", {
+      enabled: settings?.enabled,
+      intervalMinutes: settings?.intervalMinutes,
+      batchSize: settings?.batchSize,
+    });
+
+    // Dừng lịch cũ trước khi tạo lịch mới.
+    if (scheduledTask) {
+      scheduledTask.stop();
+      scheduledTask = null;
+
+      console.log("[Shopee Auto Stock] Đã dừng lịch cũ.");
+    }
+
+    if (!settings || !normalizeEnabled(settings.enabled)) {
+      console.log("[Shopee Auto Stock] Job đang tắt.");
+
+      return {
+        success: true,
+        enabled: false,
+        message: "Auto Stock đang tắt.",
+      };
+    }
+
+    const interval = normalizeInterval(settings.intervalMinutes, 5);
+    const batchSize = normalizeBatchSize(settings.batchSize);
+    const expression = getIntervalExpression(interval);
+
+    scheduledTask = cron.schedule(
+      expression,
+      async () => {
+        const now = new Date().toLocaleString("vi-VN", {
+          timeZone: "Asia/Ho_Chi_Minh",
+        });
+
+        console.log(`[Shopee Auto Stock] Cron được kích hoạt lúc ${now}`);
+
+        try {
+          // Luôn đọc cấu hình mới nhất trước khi xử lý.
+          const latestSettings = await getAutoStockSettings();
+
+          if (!normalizeEnabled(latestSettings?.enabled)) {
+            console.log("[Shopee Auto Stock] Đã tắt, bỏ qua lần chạy.");
+
+            return;
+          }
+
+          // processOrders tự kiểm tra isRunning và distributed lock.
+          const result = await processOrders({
+            trigger: "cron",
+            batchSize: normalizeBatchSize(latestSettings.batchSize),
+          });
+
+          console.log("[Shopee Auto Stock] Kết quả:", JSON.stringify(result));
+        } catch (error) {
+          console.error("[Shopee Auto Stock] Cron execution error:", error);
+        }
+      },
+      {
+        timezone: "Asia/Ho_Chi_Minh",
+      },
+    );
+
+    console.log(
+      `[Shopee Auto Stock] Đã bật lịch thành công.
+Chu kỳ: ${interval} phút
+Cron: ${expression}
+Batch: ${batchSize}`,
+    );
+
+    return {
+      success: true,
+      enabled: true,
+      intervalMinutes: interval,
+      batchSize,
+      cronExpression: expression,
+    };
+  } catch (error) {
+    console.error("[Shopee Auto Stock] Configure error:", error);
+
+    return {
+      success: false,
+      enabled: false,
+      message: error.message,
+    };
+  } finally {
+    configuringJob = false;
+  }
+}
+
+// =====================================================
+// UPDATE AUTO STOCK SETTINGS
+// =====================================================
+
+async function updateAutoStockSettings(data = {}) {
+  try {
+    // Lấy cấu hình hiện tại để hỗ trợ cập nhật từng phần.
+    const current = await getAutoStockSettings();
+
+    const enabled = normalizeEnabled(
+      data.enabled,
+      normalizeEnabled(current?.enabled, false),
+    );
+
+    const interval = normalizeInterval(
+      data.intervalMinutes,
+      normalizeInterval(current?.intervalMinutes, 5),
+    );
+
+    const batchSize =
+      data.batchSize !== undefined
+        ? normalizeBatchSize(data.batchSize)
+        : normalizeBatchSize(current?.batchSize);
+
+    const settings = await ShopeeAutoStockSettings.findOneAndUpdate(
+      { _id: LOCK_ID },
+      {
+        $set: {
+          enabled,
+          intervalMinutes: interval,
+          batchSize,
+        },
+        $setOnInsert: {
+          lastRunAt: null,
+        },
+      },
+      {
+        new: true,
+        upsert: true,
+        setDefaultsOnInsert: true,
+        runValidators: true,
+      },
+    );
+
+    // Cấu hình lại cron ngay sau khi lưu.
+    const job = await configureShopeeAutoStockJob();
+
+    return {
+      success: true,
+      message: enabled ? "Đã bật Auto Stock." : "Đã tắt Auto Stock.",
+      settings,
+      job,
+    };
+  } catch (error) {
+    console.error("[Shopee Auto Stock] Update settings error:", error);
+
+    throw error;
+  }
+}
+
+// =====================================================
+// START JOB
+// =====================================================
+
+async function startShopeeAutoStockJob() {
+  return configureShopeeAutoStockJob();
+}
+
+// =====================================================
+// STOP JOB
+// =====================================================
+
+function stopShopeeAutoStockJob() {
   if (scheduledTask) {
     scheduledTask.stop();
     scheduledTask = null;
   }
 
-  currentInterval = null;
+  console.log("[Shopee Auto Stock] Đã dừng cron job.");
 
-  if (!settings || !settings.enabled) {
-    console.log("[Shopee Auto Stock] Job đang tắt.");
-    return;
-  }
-
-  const interval = [1, 5, 10, 15, 30, 60].includes(
-    Number(settings.intervalMinutes),
-  )
-    ? Number(settings.intervalMinutes)
-    : 5;
-
-  const expression = getIntervalExpression(interval);
-
-  scheduledTask = cron.schedule(
-    expression,
-    async () => {
-      try {
-        const latestSettings = await ShopeeAutoStockSettings.findById(
-          "SHOPEE_AUTO_STOCK_SETTINGS",
-        );
-
-        if (!latestSettings?.enabled) return;
-
-        await processOrders({
-          trigger: "cron",
-          batchSize: latestSettings.batchSize || 100,
-        });
-      } catch (error) {
-        console.error("[Shopee Auto Stock Cron]", error);
-      }
-    },
-    {
-      timezone: "Asia/Ho_Chi_Minh",
-    },
-  );
-
-  currentInterval = interval;
-
-  console.log(`[Shopee Auto Stock] Đã bật Job, chu kỳ ${interval} phút.`);
+  return {
+    success: true,
+    message: "Đã dừng Auto Stock.",
+  };
 }
 
-async function startShopeeAutoStockJob() {
-  await configureShopeeAutoStockJob();
-}
+// =====================================================
+// EXPORTS
+// =====================================================
 
 module.exports = {
   processOrders,
   processOneOrder,
+
+  getAutoStockSettings,
+  updateAutoStockSettings,
+
   configureShopeeAutoStockJob,
   startShopeeAutoStockJob,
+  stopShopeeAutoStockJob,
 };

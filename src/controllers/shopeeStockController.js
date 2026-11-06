@@ -202,74 +202,325 @@ function getPagination(query, defaultLimit = 50) {
 
 exports.getStockTransactionsAsync = async (req, res) => {
   try {
-    const { page, limit, skip } = getPagination(req.query);
+    const {
+      shopId,
+      orderSn,
+      kind,
+      status,
+      from,
+      to,
+      page = 1,
+      limit = 50,
+    } = req.query;
 
-    const filter = {};
-
-    if (req.query.shopId) {
-      filter.shopId = toString(req.query.shopId);
+    if (!shopId || !String(shopId).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng chọn shop Shopee.",
+      });
     }
 
-    if (req.query.orderSn) {
-      filter.orderSn = toString(req.query.orderSn);
+    const currentPage = Math.max(1, Number.parseInt(page, 10) || 1);
+    const pageSize = Math.min(
+      100,
+      Math.max(1, Number.parseInt(limit, 10) || 50),
+    );
+
+    const filter = {
+      shopId: String(shopId).trim(),
+    };
+
+    if (orderSn && String(orderSn).trim()) {
+      filter.orderSn = {
+        $regex: String(orderSn).trim(),
+        $options: "i",
+      };
     }
 
-    if (req.query.kind) {
-      filter.kind = toString(req.query.kind);
-    }
+    if (kind) filter.kind = String(kind).trim();
+    if (status) filter.status = String(status).trim();
 
-    if (req.query.status) {
-      filter.status = toString(req.query.status);
-    }
-
-    if (req.query.from || req.query.to) {
+    if (from || to) {
       filter.createdAt = {};
 
-      if (req.query.from) {
-        const from = new Date(req.query.from);
+      if (from) {
+        const fromDate = new Date(from);
 
-        if (Number.isNaN(from.getTime())) {
-          return sendError(res, 400, "Ngày bắt đầu không hợp lệ.");
+        if (Number.isNaN(fromDate.getTime())) {
+          return res.status(400).json({
+            success: false,
+            message: "Ngày bắt đầu không hợp lệ.",
+          });
         }
 
-        filter.createdAt.$gte = from;
+        filter.createdAt.$gte = fromDate;
       }
 
-      if (req.query.to) {
-        const to = new Date(req.query.to);
+      if (to) {
+        const toDate = new Date(to);
 
-        if (Number.isNaN(to.getTime())) {
-          return sendError(res, 400, "Ngày kết thúc không hợp lệ.");
+        if (Number.isNaN(toDate.getTime())) {
+          return res.status(400).json({
+            success: false,
+            message: "Ngày kết thúc không hợp lệ.",
+          });
         }
 
-        to.setHours(23, 59, 59, 999);
-        filter.createdAt.$lte = to;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(String(to))) {
+          toDate.setHours(23, 59, 59, 999);
+        }
+
+        filter.createdAt.$lte = toDate;
       }
     }
 
-    const [transactions, total] = await Promise.all([
+    const skip = (currentPage - 1) * pageSize;
+
+    const [transactions, total, summary] = await Promise.all([
       ShopeeStockTransaction.find(filter)
         .sort({ createdAt: -1, _id: -1 })
         .skip(skip)
-        .limit(limit)
+        .limit(pageSize)
         .lean(),
 
       ShopeeStockTransaction.countDocuments(filter),
+
+      ShopeeStockTransaction.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: "$kind",
+            count: { $sum: 1 },
+            totalQty: {
+              $sum: { $ifNull: ["$totalQty", 0] },
+            },
+          },
+        },
+      ]),
     ]);
 
-    return res.json({
+    // =================================================
+    // LẤY THÔNG TIN ĐƠN SHOPEE
+    // =================================================
+
+    // =====================================================
+    // LOAD SHOPEE ORDERS
+    // =====================================================
+
+    const normalizeKey = (value) =>
+      value === undefined || value === null ? "" : String(value).trim();
+
+    const orderSns = [
+      ...new Set(
+        transactions
+          .map((transaction) => normalizeKey(transaction.orderSn))
+          .filter(Boolean),
+      ),
+    ];
+
+    let orders = [];
+
+    if (orderSns.length) {
+      orders = await ShopeeOrder.find({
+        shopId: normalizeKey(shopId),
+        orderSn: { $in: orderSns },
+      })
+        .select(
+          [
+            "shopId",
+            "orderSn",
+            "orderStatus",
+            "buyerUsername",
+            "recipientName",
+            "recipientPhone",
+            "recipientAddress",
+            "paymentMethod",
+            "totalAmount",
+            "shippingCarrier",
+            "createTime",
+            "updateTime",
+            "items",
+            "stockStatus",
+            "stockDeducted",
+            "stockReservedAt",
+            "stockDeductedAt",
+            "stockReleasedAt",
+            "stockReturnedAt",
+            "returnedQty",
+            "returnReceived",
+          ].join(" "),
+        )
+        .lean();
+    }
+
+    // =====================================================
+    // MAP ORDER BY SHOP + ORDER SN
+    // =====================================================
+
+    const orderMap = new Map(
+      orders.map((order) => [
+        `${normalizeKey(order.shopId)}_${normalizeKey(order.orderSn)}`,
+        order,
+      ]),
+    );
+
+    // =================================================
+    // LẤY TÊN SẢN PHẨM NỘI BỘ
+    // =================================================
+
+    const productIds = new Set();
+
+    for (const order of orders) {
+      for (const item of order.items || []) {
+        if (item.productId) {
+          productIds.add(toString(item.productId));
+        }
+      }
+    }
+
+    for (const transaction of transactions) {
+      for (const allocation of transaction.allocations || []) {
+        if (allocation.productId) {
+          productIds.add(toString(allocation.productId));
+        }
+      }
+    }
+
+    let products = [];
+
+    if (productIds.size) {
+      products = await Product.find({
+        _id: {
+          $in: [...productIds].filter((id) => mongoose.isValidObjectId(id)),
+        },
+      })
+        .select("_id title code")
+        .lean();
+    }
+
+    const productMap = new Map(
+      products.map((product) => [toString(product._id), product]),
+    );
+
+    // =================================================
+    // GẮN ORDER INFO VÀO TỪNG GIAO DỊCH
+    // =================================================
+
+    const enrichedTransactions = transactions.map((transaction) => {
+      // Khóa phải giống hệt khóa lúc tạo orderMap
+      const transactionShopId = normalizeKey(transaction.shopId || shopId);
+
+      const transactionOrderSn = normalizeKey(transaction.orderSn);
+
+      const orderKey = `${transactionShopId}_${transactionOrderSn}`;
+
+      const order = orderMap.get(orderKey) || null;
+
+      const orderInfo = order
+        ? {
+            shopId: order.shopId,
+            orderSn: order.orderSn,
+            orderStatus: order.orderStatus || "",
+            buyerUsername: order.buyerUsername || "",
+            recipientName: order.recipientName || "",
+            recipientPhone: order.recipientPhone || "",
+            recipientAddress: order.recipientAddress || "",
+            paymentMethod: order.paymentMethod || "",
+            totalAmount: toNumber(order.totalAmount),
+            shippingCarrier: order.shippingCarrier || "",
+            createTime: order.createTime || null,
+            updateTime: order.updateTime || null,
+
+            stockStatus: order.stockStatus || "pending",
+            stockDeducted: Boolean(order.stockDeducted),
+            stockReservedAt: order.stockReservedAt || null,
+            stockDeductedAt: order.stockDeductedAt || null,
+            stockReleasedAt: order.stockReleasedAt || null,
+            stockReturnedAt: order.stockReturnedAt || null,
+            returnedQty: toNumber(order.returnedQty),
+            returnReceived: Boolean(order.returnReceived),
+
+            items: (order.items || []).map((item) => {
+              const product = productMap.get(toString(item.productId));
+
+              return {
+                itemName: item.itemName || "",
+                modelName: item.modelName || "",
+                itemSku: item.itemSku || "",
+                variationSku: item.variationSku || "",
+
+                productId: item.productId || null,
+                productTitle: product?.title || "",
+                productCode: product?.code || "",
+
+                variantCode: item.variantCode || "",
+                variantName: item.variantName || "",
+
+                mappingStatus: item.mappingStatus || "unmapped",
+                allowStockDeduction: item.allowStockDeduction === true,
+
+                quantity: toNumber(item.quantity),
+                quantityMultiplier: toNumber(item.quantityMultiplier || 1),
+
+                unitPrice: toNumber(item.unitPrice),
+                totalPrice: toNumber(item.totalPrice),
+
+                reservedQty: toNumber(item.reservedQty),
+                deductedQty: toNumber(item.deductedQty),
+                returnedQty: toNumber(item.returnedQty),
+              };
+            }),
+          }
+        : null;
+
+      const allocations = (transaction.allocations || []).map((allocation) => {
+        const product = productMap.get(toString(allocation.productId));
+
+        return {
+          ...allocation,
+          productTitle: product?.title || "",
+          productCode: product?.code || "",
+        };
+      });
+
+      return {
+        ...transaction,
+        allocations,
+        orderInfo,
+      };
+    });
+
+    const summaryByKind = {};
+
+    for (const item of summary) {
+      summaryByKind[item._id || "unknown"] = {
+        count: item.count,
+        totalQty: item.totalQty,
+      };
+    }
+
+    return res.status(200).json({
       success: true,
-      data: transactions,
+      message: "Lấy lịch sử giao dịch kho Shopee thành công.",
+      transactions: enrichedTransactions,
       pagination: {
-        page,
-        limit,
+        page: currentPage,
+        limit: pageSize,
         total,
-        totalPages: Math.ceil(total / limit),
+        totalPages: Math.ceil(total / pageSize),
+        hasNextPage: currentPage * pageSize < total,
+        hasPrevPage: currentPage > 1,
       },
+      summary: summaryByKind,
     });
   } catch (error) {
-    console.error("[Shopee Stock] getTransactions:", error);
-    return sendError(res, 500, error.message);
+    console.error("[Shopee] getStockTransactionsAsync:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể lấy lịch sử giao dịch kho Shopee.",
+      error: error.message,
+    });
   }
 };
 
@@ -994,148 +1245,5 @@ exports.previewStockDeductionAsync = async (req, res) => {
   } catch (error) {
     console.error("[Shopee Stock] previewStockDeduction:", error);
     return sendError(res, 400, error.message);
-  }
-};
-
-// =====================================================
-// GET ALL SHOPEE STOCK TRANSACTIONS
-// GET /api/shopee/stock/transactions
-// =====================================================
-
-exports.getStockTransactionsAsync = async (req, res) => {
-  try {
-    const {
-      shopId,
-      orderSn,
-      kind,
-      status,
-      from,
-      to,
-      page = 1,
-      limit = 50,
-    } = req.query;
-
-    if (!shopId || !String(shopId).trim()) {
-      return res.status(400).json({
-        success: false,
-        message: "Vui lòng chọn shop Shopee.",
-      });
-    }
-
-    const currentPage = Math.max(1, Number.parseInt(page, 10) || 1);
-    const pageSize = Math.min(
-      100,
-      Math.max(1, Number.parseInt(limit, 10) || 50),
-    );
-
-    const filter = {
-      shopId: String(shopId).trim(),
-    };
-
-    // Các bộ lọc đều không bắt buộc
-    if (orderSn && String(orderSn).trim()) {
-      filter.orderSn = {
-        $regex: String(orderSn).trim(),
-        $options: "i",
-      };
-    }
-
-    if (kind && String(kind).trim()) {
-      filter.kind = String(kind).trim();
-    }
-
-    if (status && String(status).trim()) {
-      filter.status = String(status).trim();
-    }
-
-    if (from || to) {
-      filter.createdAt = {};
-
-      if (from) {
-        const fromDate = new Date(from);
-
-        if (Number.isNaN(fromDate.getTime())) {
-          return res.status(400).json({
-            success: false,
-            message: "Ngày bắt đầu không hợp lệ.",
-          });
-        }
-
-        filter.createdAt.$gte = fromDate;
-      }
-
-      if (to) {
-        const toDate = new Date(to);
-
-        if (Number.isNaN(toDate.getTime())) {
-          return res.status(400).json({
-            success: false,
-            message: "Ngày kết thúc không hợp lệ.",
-          });
-        }
-
-        // Bao gồm toàn bộ ngày kết thúc nếu người dùng chỉ gửi YYYY-MM-DD
-        if (/^\d{4}-\d{2}-\d{2}$/.test(String(to))) {
-          toDate.setHours(23, 59, 59, 999);
-        }
-
-        filter.createdAt.$lte = toDate;
-      }
-    }
-
-    const skip = (currentPage - 1) * pageSize;
-
-    const [transactions, total, summary] = await Promise.all([
-      ShopeeStockTransaction.find(filter)
-        .sort({ createdAt: -1, _id: -1 })
-        .skip(skip)
-        .limit(pageSize)
-        .lean(),
-
-      ShopeeStockTransaction.countDocuments(filter),
-
-      ShopeeStockTransaction.aggregate([
-        { $match: filter },
-        {
-          $group: {
-            _id: "$kind",
-            count: { $sum: 1 },
-            totalQty: { $sum: { $ifNull: ["$totalQty", 0] } },
-          },
-        },
-      ]),
-    ]);
-
-    const summaryByKind = {};
-
-    for (const item of summary) {
-      summaryByKind[item._id || "unknown"] = {
-        count: item.count,
-        totalQty: item.totalQty,
-      };
-    }
-
-    return res.status(200).json({
-      success: true,
-      message: "Lấy lịch sử giao dịch kho Shopee thành công.",
-      transactions,
-      pagination: {
-        page: currentPage,
-        limit: pageSize,
-        total,
-        totalPages: Math.ceil(total / pageSize),
-        hasNextPage: currentPage * pageSize < total,
-        hasPrevPage: currentPage > 1,
-      },
-      summary: summaryByKind,
-    });
-  } catch (error) {
-    console.error("[Shopee] getStockTransactionsAsync:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Không thể lấy lịch sử giao dịch kho Shopee.",
-      error: error.message,
-    });
   }
 };

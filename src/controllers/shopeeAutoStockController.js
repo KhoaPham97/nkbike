@@ -1,15 +1,11 @@
-const mongoose = require("mongoose");
-
 const ShopeeOrder = require("../models/ShopeeOrder");
-const ShopeeAutoStockSettings = require("../models/ShopeeAutoStockSettings");
 const ShopeeAutoStockJobLog = require("../models/ShopeeAutoStockJobLog");
 
 const {
   processOrders,
-  configureShopeeAutoStockJob,
+  getAutoStockSettings,
+  updateAutoStockSettings,
 } = require("../jobs/shopeeAutoStockJob");
-
-const SETTINGS_ID = "SHOPEE_AUTO_STOCK_SETTINGS";
 
 const ALLOWED_INTERVALS = [1, 5, 10, 15, 30, 60];
 
@@ -25,7 +21,6 @@ function getErrorMessage(error) {
 exports.getAutoStockOrdersAsync = async (req, res) => {
   try {
     const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
-
     const page = Math.max(Number(req.query.page) || 1, 1);
 
     const query = {
@@ -99,14 +94,37 @@ exports.getAutoStockHistoryAsync = async (req, res) => {
   try {
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
 
-    const history = await ShopeeAutoStockJobLog.find()
+    const history = await ShopeeAutoStockJobLog.find({})
       .sort({ startedAt: -1 })
       .limit(limit)
       .lean();
 
+    const formattedHistory = history.map((job) => {
+      const results = Array.isArray(job.results) ? job.results : [];
+
+      return {
+        ...job,
+
+        // Giữ nguyên toàn bộ dữ liệu từng đơn
+        results: results.map((item) => ({
+          ...item,
+          shopId: item.shopId || "",
+          orderSn: item.orderSn || "",
+          status: item.status || "unknown",
+          stockStatus: item.stockStatus || "pending",
+          message: item.message || "",
+          processedAt: item.processedAt || null,
+        })),
+
+        // Thống kê số lượng đơn thực tế
+        resultCount: results.length,
+      };
+    });
+
     return res.json({
       success: true,
-      history,
+      total: formattedHistory.length,
+      history: formattedHistory,
     });
   } catch (error) {
     console.error("[Auto Stock] Get history:", error);
@@ -117,7 +135,6 @@ exports.getAutoStockHistoryAsync = async (req, res) => {
     });
   }
 };
-
 // =====================================================
 // GET SETTINGS
 // GET /auto-stock/settings
@@ -125,21 +142,7 @@ exports.getAutoStockHistoryAsync = async (req, res) => {
 
 exports.getAutoStockSettingsAsync = async (req, res) => {
   try {
-    const settings = await ShopeeAutoStockSettings.findOneAndUpdate(
-      { _id: SETTINGS_ID },
-      {
-        $setOnInsert: {
-          enabled: false,
-          intervalMinutes: 5,
-          batchSize: 100,
-        },
-      },
-      {
-        new: true,
-        upsert: true,
-        setDefaultsOnInsert: true,
-      },
-    ).lean();
+    const settings = await getAutoStockSettings();
 
     return res.json({
       success: true,
@@ -162,45 +165,65 @@ exports.getAutoStockSettingsAsync = async (req, res) => {
 
 exports.updateAutoStockSettingsAsync = async (req, res) => {
   try {
-    const enabled = req.body.enabled;
+    const { enabled, intervalMinutes, batchSize } = req.body || {};
 
-    const intervalMinutes = Number(req.body.intervalMinutes);
-
-    if (typeof enabled !== "boolean") {
+    if (enabled !== undefined && typeof enabled !== "boolean") {
       return res.status(400).json({
         success: false,
         message: "Trường enabled phải là true hoặc false.",
       });
     }
 
-    if (!ALLOWED_INTERVALS.includes(intervalMinutes)) {
+    const normalizedInterval =
+      intervalMinutes !== undefined ? Number(intervalMinutes) : undefined;
+
+    if (
+      normalizedInterval !== undefined &&
+      !ALLOWED_INTERVALS.includes(normalizedInterval)
+    ) {
       return res.status(400).json({
         success: false,
         message: "Chu kỳ không hợp lệ. Chọn 1, 5, 10, 15, 30 hoặc 60 phút.",
       });
     }
 
-    const settings = await ShopeeAutoStockSettings.findOneAndUpdate(
-      { _id: SETTINGS_ID },
-      {
-        $set: {
-          enabled,
-          intervalMinutes,
-        },
-        $setOnInsert: {
-          batchSize: 100,
-        },
-      },
-      {
-        new: true,
-        upsert: true,
-        runValidators: true,
-        setDefaultsOnInsert: true,
-      },
-    );
+    const normalizedBatchSize =
+      batchSize !== undefined ? Number(batchSize) : undefined;
 
-    // Thay đổi lịch Cron ngay sau khi lưu cấu hình.
-    await configureShopeeAutoStockJob();
+    if (
+      normalizedBatchSize !== undefined &&
+      (!Number.isInteger(normalizedBatchSize) ||
+        normalizedBatchSize < 1 ||
+        normalizedBatchSize > 500)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Batch Size phải là số nguyên từ 1 đến 500.",
+      });
+    }
+
+    if (
+      enabled === undefined &&
+      normalizedInterval === undefined &&
+      normalizedBatchSize === undefined
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Không có thông tin cấu hình cần cập nhật.",
+      });
+    }
+
+    // Cập nhật đúng Settings mà Cron đang sử dụng.
+    // Hàm này cũng cấu hình lại lịch Cron sau khi lưu.
+    const settings = await updateAutoStockSettings({
+      ...(enabled !== undefined ? { enabled } : {}),
+      ...(normalizedInterval !== undefined
+        ? { intervalMinutes: normalizedInterval }
+        : {}),
+      ...(normalizedBatchSize !== undefined
+        ? { batchSize: normalizedBatchSize }
+        : {}),
+    });
 
     return res.json({
       success: true,
@@ -224,7 +247,7 @@ exports.updateAutoStockSettingsAsync = async (req, res) => {
 
 exports.runAutoStockNowAsync = async (req, res) => {
   try {
-    const settings = await ShopeeAutoStockSettings.findById(SETTINGS_ID);
+    const settings = await getAutoStockSettings();
 
     const result = await processOrders({
       trigger: "manual",
@@ -240,7 +263,7 @@ exports.runAutoStockNowAsync = async (req, res) => {
     }
 
     return res.json({
-      success: result.success,
+      success: result.failedCount === 0,
       message: "Đã hoàn thành lần chạy Auto Stock.",
       ...result,
     });

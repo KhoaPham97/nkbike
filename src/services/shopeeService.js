@@ -432,17 +432,6 @@ async function callShopeeShopApi({
       sign,
     };
 
-    console.log("SHOPEE API REQUEST:", {
-      host: config.baseUrl,
-      path,
-      method,
-      partnerId: Number(config.partnerId),
-      shopId: normalizedShopId,
-      hasAccessToken: Boolean(shop.accessToken),
-      hasSign: Boolean(sign),
-      hasPartnerId: Boolean(queryParams.partner_id),
-    });
-
     return client.request({
       url: path,
       method,
@@ -931,6 +920,7 @@ async function getShopeeProducts({
     products,
   };
 }
+
 // =====================================================
 // 13. EXPORT
 // =====================================================

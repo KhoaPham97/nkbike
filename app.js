@@ -35,6 +35,7 @@ const costRoutes = require("./src/routes/costRoutes");
 const shopeeRouter = require("./src/routes/shopeeRouter");
 const shopeeManagementRouter = require("./src/routes/shopeeManagementRouter");
 const shopeeInventoryRouter = require("./src/routes/shopeeInventoryRouter");
+const skuRoutes = require("./src/routes/skuRoutes");
 
 app.use(cors());
 
@@ -63,4 +64,5 @@ app.use("/api/admin/cost-management", costRoutes);
 app.use("/api/shopee", shopeeRouter);
 app.use("/api/shopee/management", shopeeManagementRouter);
 app.use("/api/shopee/inventory", shopeeInventoryRouter);
+app.use("/api/admin/sku", skuRoutes);
 module.exports = app;

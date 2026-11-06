@@ -42,7 +42,7 @@ const orderItemSchema = new mongoose.Schema(
       default: 0,
     },
 
-    defaultPrice: {
+    unitCost: {
       type: Number,
       default: null,
     },

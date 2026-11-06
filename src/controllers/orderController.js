@@ -865,7 +865,7 @@ const createOrderAsync = async (req, res) => {
         }
       }
 
-      // Gộp dòng theo productId + variantCode.
+      // Gộp dòng theo productId + variantCode
       const mergedItems = new Map();
 
       for (const rawItem of items) {
@@ -883,10 +883,8 @@ const createOrderAsync = async (req, res) => {
         }
 
         const variantCode = normalizeVariantCode(rawItem.variantCode);
-
         const variantName = normalizeVariantName(rawItem.variantName);
 
-        // Không có code thì dùng tên làm khóa tương thích dữ liệu cũ.
         const variantKey = variantCode
           ? `code:${variantCode}`
           : `name:${variantName}`;
@@ -904,7 +902,6 @@ const createOrderAsync = async (req, res) => {
 
         const merged = mergedItems.get(key);
 
-        // Không cho phép cùng mã nhưng tên khác nhau gây nhập nhằng.
         if (
           merged.variantName &&
           variantName &&
@@ -939,11 +936,10 @@ const createOrderAsync = async (req, res) => {
         }
 
         const variantName = normalizeVariantName(item.variantName);
-
         const variantCode = normalizeVariantCode(item.variantCode);
 
         let price = toNumber(product.price);
-        let defaultPrice = toNumber(product.defaultPrice);
+        let unitCost = toNumber(product.unitCost);
         let variant = null;
 
         if (variantCode || variantName) {
@@ -956,11 +952,12 @@ const createOrderAsync = async (req, res) => {
           }
 
           item.variantCode = normalizeVariantCode(variant.variantCode);
-
           item.variantName = normalizeVariantName(variant.name);
 
           price = toNumber(variant.price);
-          defaultPrice = toNumber(variant.defaultPrice);
+
+          // Lấy giá vốn từ Product Variant
+          unitCost = toNumber(variant.unitCost);
         } else if (getVariants(product).length > 0) {
           throw new Error(
             `Sản phẩm "${product.title}" có phân loại nhưng chưa chọn phân loại.`,
@@ -980,12 +977,13 @@ const createOrderAsync = async (req, res) => {
           variantCode: variant?.variantCode || "",
 
           price,
-          defaultPrice,
+          unitCost,
+
           qty: item.qty,
           total: itemTotal,
           thumbnail: product.thumbnail || "",
 
-          // Backend tự tính FIFO khi xuất kho.
+          // Giữ nguyên cơ chế tạo đơn: chưa phân bổ và chưa trừ kho.
           batchAllocations: [],
         });
       }
@@ -1034,11 +1032,8 @@ const createOrderAsync = async (req, res) => {
 
       if (customer) {
         customer.totalOrders = toNumber(customer.totalOrders) + 1;
-
         customer.totalSpent = toNumber(customer.totalSpent) + paidNumber;
-
         customer.debt = toNumber(customer.debt) + debt;
-
         customer.updated_at = new Date();
 
         await customer.save({ session });
@@ -1556,6 +1551,7 @@ const updateOrderStatusAsync = async (req, res) => {
         return;
       }
 
+      // Hoàn tất đơn: xuất kho FIFO
       if (newStatus === "completed" && order.stockDeducted !== true) {
         stockResult = await deductOrderStockFIFO({
           order,
@@ -1564,11 +1560,18 @@ const updateOrderStatusAsync = async (req, res) => {
         });
       }
 
+      // Hủy đơn: hoàn kho nếu đã xuất kho
       if (newStatus === "cancelled" && order.stockDeducted === true) {
         stockResult = await restoreOrderStockFIFO({
           order,
           session,
         });
+      }
+
+      // Hủy đơn: đưa số tiền thanh toán và công nợ về 0
+      if (newStatus === "cancelled") {
+        order.paidAmount = 0;
+        order.debt = 0;
       }
 
       order.status = newStatus;
@@ -1585,7 +1588,7 @@ const updateOrderStatusAsync = async (req, res) => {
         newStatus === "completed"
           ? "Xác nhận hoàn tất và xuất kho FIFO thành công"
           : newStatus === "cancelled"
-            ? "Hủy đơn hàng và hoàn kho thành công"
+            ? "Hủy đơn hàng, hoàn kho và đưa thanh toán về 0 thành công"
             : "Cập nhật trạng thái đơn hàng thành công",
       order: updatedOrder,
       stock: stockResult,

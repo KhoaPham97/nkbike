@@ -252,15 +252,46 @@ const productSchema = new mongoose.Schema(
 productSchema.pre("validate", async function () {
   if (Array.isArray(this.variants)) {
     for (const variant of this.variants) {
-      if (!variant.variantCode || !variant.variantCode.trim()) {
-        variant.variantCode = await generateVariantCode();
+      const variantCode = String(variant.variantCode || "").trim();
+      const sku = String(variant.sku || "").trim();
+
+      // Có cả hai mã: giữ nguyên, tuyệt đối không tự đổi
+      if (variantCode && sku) {
+        continue;
       }
+
+      // Có NK nhưng thiếu SKU: lấy số từ NK
+      if (variantCode && !sku) {
+        const suffix = variantCode.match(/(\d+)$/)?.[1];
+
+        if (suffix) {
+          variant.sku = `SKU-${suffix}`;
+        }
+        continue;
+      }
+
+      // Có SKU nhưng thiếu NK: lấy số từ SKU
+      if (!variantCode && sku) {
+        const suffix = sku.match(/(\d+)$/)?.[1];
+
+        if (suffix) {
+          variant.variantCode = `NK-${suffix}`;
+        }
+        continue;
+      }
+
+      // Cả hai đều chưa có: dùng chung một số thứ tự
+      const code = await generateSequenceCode("product_variant_code", "NK");
+
+      const suffix = code.match(/(\d+)$/)?.[1];
+
+      variant.variantCode = code;
+      variant.sku = `SKU-${suffix}`;
     }
   }
 
   this.updated_at = new Date();
 });
-
 // =====================================================
 // INDEX
 // =====================================================
