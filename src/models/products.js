@@ -1,7 +1,7 @@
 const mongoose = require("mongoose");
 
 // =====================================================
-// COUNTER: TẠO MÃ BIẾN THỂ TUẦN TỰ, KHÔNG TRÙNG
+// SYSTEM COUNTER
 // =====================================================
 
 const counterSchema = new mongoose.Schema(
@@ -22,7 +22,6 @@ const SystemCounter =
   mongoose.models.SystemCounter ||
   mongoose.model("SystemCounter", counterSchema);
 
-// Tạo mã tuần tự riêng cho từng loại
 async function generateSequenceCode(counterName, prefix) {
   const counter = await SystemCounter.findOneAndUpdate(
     { _id: counterName },
@@ -44,21 +43,6 @@ async function generateVariantCode() {
 async function generateVariantSku() {
   return generateSequenceCode("product_variant_sku", "SKU");
 }
-async function generateVariantCode() {
-  const counter = await SystemCounter.findOneAndUpdate(
-    { _id: "product_variant_code" },
-    {
-      $inc: { seq: 1 },
-    },
-    {
-      new: true,
-      upsert: true,
-      setDefaultsOnInsert: true,
-    },
-  );
-
-  return `NK-${counter.seq}`;
-}
 
 // =====================================================
 // VARIANT SCHEMA
@@ -72,11 +56,16 @@ const variantSchema = new mongoose.Schema(
       trim: true,
     },
 
-    // Mã biến thể dùng để ánh xạ Shopee
+    // Mã biến thể nội bộ, dùng để ánh xạ Shopee.
     variantCode: {
       type: String,
       trim: true,
-      index: true,
+    },
+
+    // SKU riêng, không dùng thay thế variantCode.
+    sku: {
+      type: String,
+      trim: true,
     },
 
     price: {
@@ -89,6 +78,7 @@ const variantSchema = new mongoose.Schema(
       default: "0",
     },
 
+    // Giá vốn lưu bằng CNY.
     unitCost: {
       type: Number,
       default: 0,
@@ -98,29 +88,34 @@ const variantSchema = new mongoose.Schema(
     weight: {
       type: Number,
       default: 0,
+      min: 0,
     },
 
+    // Tồn kho thực tế.
     qty: {
       type: Number,
       default: 0,
+      min: 0,
     },
 
-    // Giữ nguyên mã cũ
-    variantCode: {
+    // Số lượng đang được giữ cho các đơn hàng.
+    reservedQty: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    thumbnail: {
       type: String,
-      trim: true,
-      index: true,
+      default: "",
     },
 
-    sku: {
+    image: {
       type: String,
-      trim: true,
-      index: true,
+      default: "",
     },
 
-    thumbnail: String,
-    image: String,
-
+    // Số sản phẩm trong một kiện.
     packageQuantity: {
       type: Number,
       default: 1,
@@ -134,60 +129,74 @@ const variantSchema = new mongoose.Schema(
 // PRODUCT SCHEMA
 // =====================================================
 
-const productSchema = mongoose.Schema(
+const productSchema = new mongoose.Schema(
   {
     title: {
       type: String,
+      default: "",
     },
 
     price: {
       type: String,
+      default: "0",
     },
 
     rating: {
       type: Number,
+      default: 5,
     },
 
     originalPrice: {
       type: String,
+      default: "0",
     },
 
     thumbnail: {
       type: String,
+      default: "",
     },
 
     images: {
       type: [String],
+      default: [],
     },
 
     detail: {
       type: String,
+      default: "",
     },
 
     description: {
       type: String,
+      default: "",
     },
 
+    // Tổng tồn kho thực tế của sản phẩm.
     qty: {
       type: Number,
       default: 0,
+      min: 0,
     },
 
     stock: {
       type: String,
+      default: "",
     },
 
     brand: {
       type: String,
+      default: "",
     },
 
     categoryId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "categories",
+      default: null,
     },
 
     category: {
       type: String,
+      default: "",
     },
 
     variants: {
@@ -211,6 +220,8 @@ const productSchema = mongoose.Schema(
       default: "1",
     },
 
+    // Tổng số lượng bán thành công.
+    // Chỉ tăng khi đơn chuyển COMPLETED.
     soldQty: {
       type: Number,
       default: 0,
@@ -233,22 +244,17 @@ const productSchema = mongoose.Schema(
 );
 
 // =====================================================
-// TỰ ĐỘNG TẠO variantCode KHI LƯU PRODUCT
-// Chỉ tạo cho biến thể chưa có mã
+// TỰ ĐỘNG TẠO variantCode
+// Chỉ tạo cho biến thể chưa có mã.
+// Không tự thay đổi mã đã tồn tại.
 // =====================================================
 
 productSchema.pre("validate", async function () {
-  if (!Array.isArray(this.variants)) return;
-
-  for (const variant of this.variants) {
-    // Tự sinh mã biến thể
-    if (!variant.variantCode || !variant.variantCode.trim()) {
-      variant.variantCode = await generateVariantCode();
-    }
-
-    // Tự sinh SKU
-    if (!variant.sku || !variant.sku.trim()) {
-      variant.sku = await generateVariantSku();
+  if (Array.isArray(this.variants)) {
+    for (const variant of this.variants) {
+      if (!variant.variantCode || !variant.variantCode.trim()) {
+        variant.variantCode = await generateVariantCode();
+      }
     }
   }
 
@@ -263,6 +269,14 @@ productSchema.index({ created_at: -1 });
 productSchema.index({ compatibleVehicles: 1 });
 productSchema.index({ type: 1, compatibleVehicles: 1 });
 
+productSchema.index({
+  "variants.variantCode": 1,
+});
+
+productSchema.index({
+  "variants.sku": 1,
+});
+
 // =====================================================
 // MODEL
 // =====================================================
@@ -275,4 +289,5 @@ module.exports = {
   variantSchema,
   Product,
   generateVariantCode,
+  generateVariantSku,
 };

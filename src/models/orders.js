@@ -1,5 +1,9 @@
 const mongoose = require("mongoose");
 
+// ======================================================
+// ORDER ITEM
+// ======================================================
+
 const orderItemSchema = new mongoose.Schema(
   {
     productId: {
@@ -18,19 +22,31 @@ const orderItemSchema = new mongoose.Schema(
       default: "",
     },
 
+    // Tên biến thể
     variantName: {
       type: String,
       default: "",
+      trim: true,
+    },
+
+    // Mã biến thể - dùng làm khóa nhận diện chính
+    variantCode: {
+      type: String,
+      default: "",
+      trim: true,
+      index: true,
     },
 
     price: {
       type: Number,
       default: 0,
     },
+
     defaultPrice: {
       type: Number,
       default: null,
     },
+
     qty: {
       type: Number,
       default: 1,
@@ -46,7 +62,7 @@ const orderItemSchema = new mongoose.Schema(
       default: "",
     },
 
-    // Phân bổ lô nhập thủ công; chỉ trừ kho khi thực hiện xuất kho.
+    // Phân bổ lô FIFO
     batchAllocations: {
       type: [
         {
@@ -55,15 +71,31 @@ const orderItemSchema = new mongoose.Schema(
             ref: "InventoryBatch",
             required: true,
           },
+
           batchCode: {
             type: String,
             default: "",
           },
+
+          // Mã biến thể của lô đã phân bổ
+          variantCode: {
+            type: String,
+            default: "",
+            trim: true,
+          },
+
+          variantName: {
+            type: String,
+            default: "",
+            trim: true,
+          },
+
           qty: {
             type: Number,
             required: true,
             min: 0,
           },
+
           unitCost: {
             type: Number,
             default: 0,
@@ -78,6 +110,10 @@ const orderItemSchema = new mongoose.Schema(
     _id: false,
   },
 );
+
+// ======================================================
+// ORDER
+// ======================================================
 
 const orderSchema = new mongoose.Schema(
   {
@@ -170,6 +206,7 @@ const orderSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+
     stockDeducted: {
       type: Boolean,
       default: false,
@@ -180,6 +217,10 @@ const orderSchema = new mongoose.Schema(
   },
 );
 
+// ======================================================
+// INDEX
+// ======================================================
+
 orderSchema.index({
   created_at: -1,
 });
@@ -187,6 +228,12 @@ orderSchema.index({
 orderSchema.index({
   customerId: 1,
   created_at: -1,
+});
+
+// Tìm đơn hàng theo mã biến thể
+orderSchema.index({
+  "items.productId": 1,
+  "items.variantCode": 1,
 });
 
 const Order = mongoose.models.orders || mongoose.model("orders", orderSchema);

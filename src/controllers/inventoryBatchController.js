@@ -7,18 +7,154 @@ const InventoryReceipt = require("../models/InventoryReceipt");
 const Order = require("../models/orders");
 const { Product } = require("../models/products");
 
-const n = (v) => {
-  const x = Number(v);
-  return Number.isFinite(x) ? x : 0;
+// =====================================================
+// COMMON HELPERS
+// =====================================================
+
+const n = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
 };
 
-const clean = (v) => String(v || "").trim();
+const clean = (value) => String(value ?? "").trim();
 
-const getCode = (p) =>
-  p?.code || p?.productCode || p?.sku || p?.product_code || "";
+const normalizeVariantCode = (value) => clean(value);
 
-const findVariant = (p, name) =>
-  (p?.variants || []).find((v) => clean(v?.name) === clean(name));
+const normalizeVariantName = (value) => clean(value);
+
+const getVariants = (product) =>
+  Array.isArray(product?.variants) ? product.variants : [];
+
+const getCode = (product) =>
+  product?.code ||
+  product?.productCode ||
+  product?.sku ||
+  product?.product_code ||
+  "";
+
+const hasVariants = (product) => getVariants(product).length > 0;
+
+const findVariant = (product, variantName = "", variantCode = "") => {
+  const variants = getVariants(product);
+  const code = normalizeVariantCode(variantCode);
+  const name = normalizeVariantName(variantName);
+
+  if (code) {
+    return (
+      variants.find(
+        (item) => normalizeVariantCode(item?.variantCode) === code,
+      ) || null
+    );
+  }
+
+  if (!name) return null;
+
+  const matched = variants.filter(
+    (item) => normalizeVariantName(item?.name) === name,
+  );
+
+  if (matched.length > 1) {
+    throw new Error(
+      `Tên phân loại "${name}" bị trùng. Vui lòng sử dụng variantCode.`,
+    );
+  }
+
+  return matched[0] || null;
+};
+
+const resolveVariantIdentity = (
+  product,
+  variantName = "",
+  variantCode = "",
+) => {
+  const name = normalizeVariantName(variantName);
+  const code = normalizeVariantCode(variantCode);
+
+  if (!hasVariants(product)) {
+    if (name || code) {
+      throw new Error("Sản phẩm không có biến thể");
+    }
+
+    return {
+      variant: null,
+      variantName: "",
+      variantCode: "",
+    };
+  }
+
+  if (!name && !code) {
+    throw new Error("Vui lòng chọn biến thể sản phẩm");
+  }
+
+  const variant = findVariant(product, name, code);
+
+  if (!variant) {
+    throw new Error(
+      code
+        ? `Không tìm thấy biến thể có mã "${code}"`
+        : `Không tìm thấy biến thể "${name}"`,
+    );
+  }
+
+  return {
+    variant,
+    variantName: normalizeVariantName(variant.name),
+    variantCode: normalizeVariantCode(variant.variantCode),
+  };
+};
+
+const buildBatchVariantFilter = (product, variant) => {
+  if (!variant) {
+    return {
+      $or: [
+        {
+          variantCode: { $in: ["", null] },
+          variantName: { $in: ["", null] },
+        },
+      ],
+    };
+  }
+
+  const variantCode = normalizeVariantCode(variant.variantCode);
+  const variantName = normalizeVariantName(variant.name);
+
+  if (!variantCode) {
+    return { variantName };
+  }
+
+  const filter = [{ variantCode }];
+
+  const sameNameCount = getVariants(product).filter(
+    (item) => normalizeVariantName(item.name) === variantName,
+  ).length;
+
+  if (sameNameCount === 1) {
+    filter.push({
+      variantCode: { $in: ["", null] },
+      variantName,
+    });
+  }
+
+  return { $or: filter };
+};
+
+const buildBatchFilter = ({
+  product,
+  productId,
+  variant,
+  activeOnly = true,
+  remainingOnly = false,
+}) => {
+  const filter = { productId };
+
+  if (activeOnly) filter.isActive = { $ne: false };
+  if (remainingOnly) filter.remainingQty = { $gt: 0 };
+
+  return {
+    ...filter,
+    ...buildBatchVariantFilter(product, variant),
+  };
+};
 
 const generateReceiptCode = async (session, date = new Date()) => {
   const yy = String(date.getFullYear()).slice(-2);
@@ -37,7 +173,9 @@ const generateReceiptCode = async (session, date = new Date()) => {
 
   if (lastReceipt?.code) {
     const lastNumber = Number(lastReceipt.code.slice(prefix.length));
-    if (Number.isFinite(lastNumber)) nextNumber = lastNumber + 1;
+    if (Number.isFinite(lastNumber)) {
+      nextNumber = lastNumber + 1;
+    }
   }
 
   return `${prefix}${String(nextNumber).padStart(3, "0")}`;
@@ -52,12 +190,36 @@ const makeBatchCode = (date = new Date()) => {
   return `NK${ymd}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
 };
 
+const getLegacyVariantIdentity = (product, history) => {
+  const variantCode = normalizeVariantCode(history.variantCode);
+  const variantName = normalizeVariantName(history.variantName);
+
+  if (!hasVariants(product)) {
+    return {
+      variantCode: "",
+      variantName: "",
+    };
+  }
+
+  const identity = resolveVariantIdentity(product, variantName, variantCode);
+
+  return {
+    variantCode: identity.variantCode,
+    variantName: identity.variantName,
+  };
+};
+
+// =====================================================
+// DANH SÁCH LÔ NHẬP
+// =====================================================
+
 const listInventoryBatchesAsync = async (req, res) => {
   try {
     const page = Math.max(1, n(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, n(req.query.limit) || 20));
     const search = clean(req.query.search);
-    const filter = { isActive: true };
+
+    const filter = { isActive: { $ne: false } };
 
     if (
       req.query.productId &&
@@ -66,12 +228,19 @@ const listInventoryBatchesAsync = async (req, res) => {
       filter.productId = req.query.productId;
     }
 
-    if (req.query.variantName !== undefined) {
+    if (req.query.variantCode !== undefined) {
+      filter.variantCode = clean(req.query.variantCode);
+    } else if (req.query.variantName !== undefined) {
       filter.variantName = clean(req.query.variantName);
     }
 
-    if (req.query.source) filter.source = clean(req.query.source);
-    if (req.query.onlyRemaining === "true") filter.remainingQty = { $gt: 0 };
+    if (req.query.source) {
+      filter.source = clean(req.query.source).toUpperCase();
+    }
+
+    if (req.query.onlyRemaining === "true") {
+      filter.remainingQty = { $gt: 0 };
+    }
 
     if (search) {
       const rx = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
@@ -80,6 +249,7 @@ const listInventoryBatchesAsync = async (req, res) => {
         { batchCode: rx },
         { productTitle: rx },
         { productCode: rx },
+        { variantCode: rx },
         { variantName: rx },
         { note: rx },
       ];
@@ -87,11 +257,13 @@ const listInventoryBatchesAsync = async (req, res) => {
 
     const [rows, total, summary] = await Promise.all([
       InventoryBatch.find(filter)
-        .sort({ importDate: -1, createdAt: -1 })
+        .sort({ importDate: -1, createdAt: -1, _id: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
         .lean(),
+
       InventoryBatch.countDocuments(filter),
+
       InventoryBatch.aggregate([
         { $match: filter },
         {
@@ -100,7 +272,9 @@ const listInventoryBatchesAsync = async (req, res) => {
             batchCount: { $sum: 1 },
             remainingQty: { $sum: "$remainingQty" },
             inventoryValue: {
-              $sum: { $multiply: ["$remainingQty", "$unitCost"] },
+              $sum: {
+                $multiply: ["$remainingQty", "$unitCost"],
+              },
             },
           },
         },
@@ -124,6 +298,7 @@ const listInventoryBatchesAsync = async (req, res) => {
     });
   } catch (error) {
     console.error("listInventoryBatchesAsync:", error);
+
     return res.status(500).json({
       success: false,
       message: error.message || "Không thể tải lô nhập",
@@ -131,29 +306,66 @@ const listInventoryBatchesAsync = async (req, res) => {
   }
 };
 
+// =====================================================
+// LÔ CỦA MỘT SẢN PHẨM
+// =====================================================
+
 const getProductBatchesAsync = async (req, res) => {
   try {
     const { productId } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(productId)) {
-      return res
-        .status(400)
-        .json({ success: false, message: "productId không hợp lệ" });
+      return res.status(400).json({
+        success: false,
+        message: "productId không hợp lệ",
+      });
     }
 
-    const variantName = clean(req.query.variantName);
-    const filter = {
+    const product = await Product.findById(productId).select("variants").lean();
+
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy sản phẩm",
+      });
+    }
+
+    let variant = null;
+
+    if (
+      req.query.variantCode !== undefined ||
+      req.query.variantName !== undefined
+    ) {
+      try {
+        const identity = resolveVariantIdentity(
+          product,
+          req.query.variantName,
+          req.query.variantCode,
+        );
+
+        variant = identity.variant;
+      } catch (error) {
+        return res.status(400).json({
+          success: false,
+          message: error.message,
+        });
+      }
+    } else if (hasVariants(product)) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng truyền variantCode hoặc variantName",
+      });
+    }
+
+    const filter = buildBatchFilter({
+      product,
       productId,
-      isActive: true,
-      remainingQty: { $gt: 0 },
-    };
-
-    if (req.query.variantName !== undefined) {
-      filter.variantName = variantName;
-    }
+      variant,
+      remainingOnly: true,
+    });
 
     const batches = await InventoryBatch.find(filter)
-      .sort({ importDate: 1, createdAt: 1 })
+      .sort({ importDate: 1, createdAt: 1, _id: 1 })
       .lean();
 
     const totalRemaining = batches.reduce(
@@ -161,8 +373,14 @@ const getProductBatchesAsync = async (req, res) => {
       0,
     );
 
-    return res.json({ success: true, batches, totalRemaining });
+    return res.json({
+      success: true,
+      batches,
+      totalRemaining,
+    });
   } catch (error) {
+    console.error("getProductBatchesAsync:", error);
+
     return res.status(500).json({
       success: false,
       message: error.message || "Không thể tải lô sản phẩm",
@@ -170,30 +388,42 @@ const getProductBatchesAsync = async (req, res) => {
   }
 };
 
+// =====================================================
+// LỊCH SỬ CỦA MỘT LÔ
+// =====================================================
+
 const getInventoryBatchHistoryAsync = async (req, res) => {
   try {
     const { id } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res
-        .status(400)
-        .json({ success: false, message: "batchId không hợp lệ" });
+      return res.status(400).json({
+        success: false,
+        message: "batchId không hợp lệ",
+      });
     }
 
     const batch = await InventoryBatch.findById(id).lean();
 
     if (!batch) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Không tìm thấy lô" });
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy lô",
+      });
     }
 
     const histories = await InventoryHistory.find({ batchId: id })
       .sort({ created_at: -1 })
       .lean();
 
-    return res.json({ success: true, batch, histories });
+    return res.json({
+      success: true,
+      batch,
+      histories,
+    });
   } catch (error) {
+    console.error("getInventoryBatchHistoryAsync:", error);
+
     return res.status(500).json({
       success: false,
       message: error.message || "Không thể tải lịch sử lô",
@@ -201,28 +431,33 @@ const getInventoryBatchHistoryAsync = async (req, res) => {
   }
 };
 
-/*
- * Lưu phân bổ lô cho đơn nhưng CHƯA trừ kho.
- */
+// =====================================================
+// LƯU PHÂN BỔ LÔ CHO ĐƠN - CHƯA TRỪ KHO
+// =====================================================
+
 const updateOrderBatchAllocationsAsync = async (req, res) => {
   try {
     const { orderId } = req.params;
     const { items = [] } = req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(orderId)) {
-      return res
-        .status(400)
-        .json({ success: false, message: "orderId không hợp lệ" });
+      return res.status(400).json({
+        success: false,
+        message: "orderId không hợp lệ",
+      });
     }
 
-    if (!Array.isArray(items)) throw new Error("items phải là mảng");
+    if (!Array.isArray(items)) {
+      throw new Error("items phải là mảng");
+    }
 
     const order = await Order.findById(orderId);
 
     if (!order) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Không tìm thấy đơn hàng" });
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy đơn hàng",
+      });
     }
 
     if (order.stockDeducted) {
@@ -232,18 +467,58 @@ const updateOrderBatchAllocationsAsync = async (req, res) => {
       });
     }
 
+    const productCache = new Map();
+    const processedItems = new Set();
+
     for (const input of items) {
-      const item = order.items.find(
-        (x) =>
-          String(x.productId) === String(input.productId) &&
-          clean(x.variantName) === clean(input.variantName),
+      if (!mongoose.Types.ObjectId.isValid(input.productId)) {
+        throw new Error("productId không hợp lệ");
+      }
+
+      const productId = String(input.productId);
+      let product = productCache.get(productId);
+
+      if (!product) {
+        product = await Product.findById(productId).select("variants");
+
+        if (!product) {
+          throw new Error(`Không tìm thấy sản phẩm ${productId}`);
+        }
+
+        productCache.set(productId, product);
+      }
+
+      const identity = resolveVariantIdentity(
+        product,
+        input.variantName,
+        input.variantCode,
       );
+
+      const item = order.items.find((row) => {
+        if (String(row.productId) !== productId) return false;
+
+        const rowCode = normalizeVariantCode(row.variantCode);
+
+        if (identity.variantCode && rowCode) {
+          return rowCode === identity.variantCode;
+        }
+
+        return normalizeVariantName(row.variantName) === identity.variantName;
+      });
 
       if (!item) {
         throw new Error(
-          `Không tìm thấy sản phẩm/Variant trong đơn: ${input.productId}`,
+          `Không tìm thấy sản phẩm/biến thể trong đơn: ${productId}`,
         );
       }
+
+      const itemKey = `${productId}::${identity.variantCode || identity.variantName}`;
+
+      if (processedItems.has(itemKey)) {
+        throw new Error("Một sản phẩm/biến thể không được phân bổ lặp lại");
+      }
+
+      processedItems.add(itemKey);
 
       const allocations = Array.isArray(input.batchAllocations)
         ? input.batchAllocations
@@ -258,26 +533,36 @@ const updateOrderBatchAllocationsAsync = async (req, res) => {
           throw new Error("batchId không hợp lệ");
         }
 
-        if (seen.has(String(allocation.batchId))) {
+        const batchId = String(allocation.batchId);
+
+        if (seen.has(batchId)) {
           throw new Error("Một lô không được chọn lặp lại");
         }
 
-        seen.add(String(allocation.batchId));
+        seen.add(batchId);
 
         const qty = n(allocation.qty);
 
-        if (!Number.isInteger(qty) || qty <= 0) {
+        if (!Number.isSafeInteger(qty) || qty <= 0) {
           throw new Error("Số lượng phân bổ phải là số nguyên dương");
         }
 
+        const batchFilter = buildBatchFilter({
+          product,
+          productId: item.productId,
+          variant: identity.variant,
+        });
+
         const batch = await InventoryBatch.findOne({
           _id: allocation.batchId,
-          productId: item.productId,
-          variantName: clean(item.variantName),
-          isActive: true,
+          ...batchFilter,
         }).lean();
 
-        if (!batch) throw new Error("Lô không thuộc đúng sản phẩm/Variant");
+        if (!batch) {
+          throw new Error(
+            `Lô ${allocation.batchCode || batchId} không thuộc đúng sản phẩm/biến thể`,
+          );
+        }
 
         if (n(batch.remainingQty) < qty) {
           throw new Error(
@@ -290,6 +575,8 @@ const updateOrderBatchAllocationsAsync = async (req, res) => {
         normalized.push({
           batchId: batch._id,
           batchCode: batch.batchCode,
+          variantCode: identity.variantCode,
+          variantName: identity.variantName,
           qty,
           unitCost: n(batch.unitCost),
         });
@@ -301,6 +588,8 @@ const updateOrderBatchAllocationsAsync = async (req, res) => {
         );
       }
 
+      item.variantCode = identity.variantCode;
+      item.variantName = identity.variantName;
       item.batchAllocations = normalized;
     }
 
@@ -313,6 +602,8 @@ const updateOrderBatchAllocationsAsync = async (req, res) => {
       order,
     });
   } catch (error) {
+    console.error("updateOrderBatchAllocationsAsync:", error);
+
     return res.status(400).json({
       success: false,
       message: error.message || "Không thể lưu phân bổ lô",
@@ -320,11 +611,10 @@ const updateOrderBatchAllocationsAsync = async (req, res) => {
   }
 };
 
-/*
- * Xuất kho theo phân bổ thủ công.
- * Transaction đảm bảo Product, Batch, Order và InventoryHistory
- * cùng thành công hoặc cùng rollback.
- */
+// =====================================================
+// XUẤT KHO THEO PHÂN BỔ LÔ THỦ CÔNG
+// =====================================================
+
 const deductOrderStockByBatchesAsync = async (req, res) => {
   const session = await mongoose.startSession();
 
@@ -342,29 +632,22 @@ const deductOrderStockByBatchesAsync = async (req, res) => {
 
       if (!order) throw new Error("Không tìm thấy đơn hàng");
       if (order.stockDeducted) throw new Error("Đơn hàng đã trừ kho");
+
       if (order.status === "cancelled") {
         throw new Error("Không thể xuất kho cho đơn đã hủy");
       }
 
-      const cache = new Map();
+      const productCache = new Map();
 
       for (const item of order.items) {
         const qty = n(item.qty);
 
-        if (!Number.isInteger(qty) || qty <= 0) {
+        if (!Number.isSafeInteger(qty) || qty <= 0) {
           throw new Error("Số lượng đơn không hợp lệ");
         }
 
-        const allocations = item.batchAllocations || [];
-        const sum = allocations.reduce((total, row) => total + n(row.qty), 0);
-
-        if (sum !== qty) {
-          throw new Error(
-            `Đơn ${order.code}: ${item.productTitle} chưa phân bổ đủ lô (${sum}/${qty})`,
-          );
-        }
-
-        let product = cache.get(String(item.productId));
+        const productId = String(item.productId);
+        let product = productCache.get(productId);
 
         if (!product) {
           product = await Product.findById(item.productId).session(session);
@@ -373,38 +656,56 @@ const deductOrderStockByBatchesAsync = async (req, res) => {
             throw new Error(`Không tìm thấy sản phẩm ${item.productId}`);
           }
 
-          cache.set(String(item.productId), product);
+          productCache.set(productId, product);
         }
 
-        const variantName = clean(item.variantName);
-        const variant = variantName ? findVariant(product, variantName) : null;
+        const identity = resolveVariantIdentity(
+          product,
+          item.variantName,
+          item.variantCode,
+        );
 
-        if (variantName && !variant) {
-          throw new Error(`Không tìm thấy Variant ${variantName}`);
+        const allocations = Array.isArray(item.batchAllocations)
+          ? item.batchAllocations
+          : [];
+
+        const sum = allocations.reduce((total, row) => total + n(row.qty), 0);
+
+        if (sum !== qty) {
+          throw new Error(
+            `Đơn ${order.code}: ${item.productTitle} chưa phân bổ đủ lô (${sum}/${qty})`,
+          );
         }
 
+        const variant = identity.variant;
         const currentQty = variant ? n(variant.qty) : n(product.qty);
+        const reservedQty = variant ? n(variant.reservedQty) : 0;
+        const availableQty = Math.max(0, currentQty - reservedQty);
 
-        if (currentQty < qty) {
+        if (availableQty < qty) {
           throw new Error(
-            `${item.productTitle} chỉ còn ${currentQty}, cần ${qty}`,
+            `${item.productTitle} chỉ còn khả dụng ${availableQty} (tồn ${currentQty}, đã giữ ${reservedQty}), cần ${qty}`,
           );
         }
 
-        if (variant && n(product.qty) < qty) {
-          throw new Error(
-            `${item.productTitle}: tồn tổng sản phẩm không đủ để xuất ${qty}`,
-          );
-        }
-
-        let runningVariantQty = currentQty;
+        let runningQty = currentQty;
 
         for (const allocation of allocations) {
+          const allocationQty = n(allocation.qty);
+
+          if (!Number.isSafeInteger(allocationQty) || allocationQty <= 0) {
+            throw new Error("Số lượng phân bổ lô không hợp lệ");
+          }
+
+          const batchFilter = buildBatchFilter({
+            product,
+            productId: item.productId,
+            variant,
+          });
+
           const batch = await InventoryBatch.findOne({
             _id: allocation.batchId,
-            productId: item.productId,
-            variantName,
-            isActive: true,
+            ...batchFilter,
           }).session(session);
 
           if (!batch) {
@@ -413,13 +714,13 @@ const deductOrderStockByBatchesAsync = async (req, res) => {
             );
           }
 
-          if (n(batch.remainingQty) < n(allocation.qty)) {
+          if (n(batch.remainingQty) < allocationQty) {
             throw new Error(
-              `Lô ${batch.batchCode} chỉ còn ${batch.remainingQty}, cần ${allocation.qty}`,
+              `Lô ${batch.batchCode} chỉ còn ${batch.remainingQty}, cần ${allocationQty}`,
             );
           }
 
-          batch.remainingQty = n(batch.remainingQty) - n(allocation.qty);
+          batch.remainingQty = n(batch.remainingQty) - allocationQty;
 
           await batch.save({ session });
 
@@ -433,14 +734,15 @@ const deductOrderStockByBatchesAsync = async (req, res) => {
                 productId: product._id,
                 productTitle: product.title || "",
                 productCode: getCode(product),
-                variantName,
-                qty: -n(allocation.qty),
-                beforeQty: runningVariantQty,
-                afterQty: runningVariantQty - n(allocation.qty),
+                variantCode: identity.variantCode,
+                variantName: identity.variantName,
+                qty: -allocationQty,
+                beforeQty: runningQty,
+                afterQty: runningQty - allocationQty,
                 batchId: batch._id,
                 batchCode: batch.batchCode,
                 unitCost: n(batch.unitCost),
-                note: `Xuất ${allocation.qty} từ lô ${batch.batchCode} theo đơn ${order.code}`,
+                note: `Xuất ${allocationQty} từ lô ${batch.batchCode} theo đơn ${order.code}`,
                 createdBy: req.user?._id || null,
                 rollback: false,
                 created_at: new Date(),
@@ -449,20 +751,26 @@ const deductOrderStockByBatchesAsync = async (req, res) => {
             { session },
           );
 
-          runningVariantQty -= n(allocation.qty);
+          runningQty -= allocationQty;
         }
 
-        if (variant) variant.qty = currentQty - qty;
+        if (variant) {
+          variant.qty = currentQty - qty;
+        }
 
         product.qty = Math.max(0, n(product.qty) - qty);
         product.soldQty = n(product.soldQty) + qty;
         product.updated_at = new Date();
+
+        item.variantCode = identity.variantCode;
+        item.variantName = identity.variantName;
 
         await product.save({ session });
       }
 
       order.stockDeducted = true;
       order.updated_at = new Date();
+
       await order.save({ session });
 
       resultOrder = order;
@@ -484,6 +792,11 @@ const deductOrderStockByBatchesAsync = async (req, res) => {
     await session.endSession();
   }
 };
+
+// =====================================================
+// DỰNG LẠI LÔ TỪ LỊCH SỬ NHẬP/XUẤT CŨ
+// =====================================================
+
 const rebuildHistoricalBatchesAsync = async (req, res) => {
   const session = await mongoose.startSession();
 
@@ -524,6 +837,21 @@ const rebuildHistoricalBatchesAsync = async (req, res) => {
         .session(session)
         .lean();
 
+      const productCache = new Map();
+
+      const getProduct = async (productId) => {
+        const key = String(productId);
+
+        if (!productCache.has(key)) {
+          productCache.set(
+            key,
+            await Product.findById(productId).session(session),
+          );
+        }
+
+        return productCache.get(key);
+      };
+
       const imports = histories.filter(
         (history) => history.type === "import" && n(history.qty) > 0,
       );
@@ -534,23 +862,56 @@ const rebuildHistoricalBatchesAsync = async (req, res) => {
           n(history.qty) < 0,
       );
 
-      const groups = new Map();
-      const keyOf = (history) =>
-        `${String(history.productId)}::${clean(history.variantName)}`;
+      const normalizedImports = [];
+      const normalizedOutbound = [];
 
       for (const history of imports) {
+        const product = await getProduct(history.productId);
+
+        if (!product) continue;
+
+        const identity = getLegacyVariantIdentity(product, history);
+
+        normalizedImports.push({
+          ...history,
+          variantCode: identity.variantCode,
+          variantName: identity.variantName,
+        });
+      }
+
+      for (const history of outbound) {
+        const product = await getProduct(history.productId);
+
+        if (!product) continue;
+
+        const identity = getLegacyVariantIdentity(product, history);
+
+        normalizedOutbound.push({
+          ...history,
+          variantCode: identity.variantCode,
+          variantName: identity.variantName,
+        });
+      }
+
+      const keyOf = (history) =>
+        `${String(history.productId)}::${normalizeVariantCode(history.variantCode) || `NAME:${normalizeVariantName(history.variantName)}`}`;
+
+      const groups = new Map();
+
+      for (const history of normalizedImports) {
         const key = keyOf(history);
+
         if (!groups.has(key)) groups.set(key, []);
+
         groups.get(key).push(history);
       }
 
       const batches = [];
 
-      for (const [key, importRows] of groups.entries()) {
-        const [productId] = key.split("::");
-        const product = await Product.findById(productId).session(session);
-
+      for (const importRows of groups.values()) {
         for (const history of importRows) {
+          const product = await getProduct(history.productId);
+
           const receiptSuffix =
             clean(history.referenceCode) || String(history._id).slice(-6);
 
@@ -559,7 +920,8 @@ const rebuildHistoricalBatchesAsync = async (req, res) => {
             productId: history.productId,
             productTitle: history.productTitle || product?.title || "",
             productCode: history.productCode || getCode(product),
-            variantName: clean(history.variantName),
+            variantCode: normalizeVariantCode(history.variantCode),
+            variantName: normalizeVariantName(history.variantName),
             importDate: history.created_at || new Date(),
             importQty: n(history.qty),
             remainingQty: n(history.qty),
@@ -569,28 +931,29 @@ const rebuildHistoricalBatchesAsync = async (req, res) => {
                 ? history.referenceId
                 : null,
             importHistoryId: history._id,
-            source: "historical",
-            sourceConfidence: "recorded",
+            source: "OTHER",
+            sourceConfidence: "high",
             note: `Dựng từ lịch sử nhập ${history.referenceCode || ""}`,
           });
         }
       }
 
-      const sortedBatches = batches.sort(
-        (a, b) => new Date(a.importDate) - new Date(b.importDate),
-      );
+      batches.sort((a, b) => new Date(a.importDate) - new Date(b.importDate));
 
       const getCurrentGroup = (history) =>
-        sortedBatches.filter(
+        batches.filter(
           (batch) =>
             String(batch.productId) === String(history.productId) &&
-            clean(batch.variantName) === clean(history.variantName) &&
+            normalizeVariantCode(batch.variantCode) ===
+              normalizeVariantCode(history.variantCode) &&
+            normalizeVariantName(batch.variantName) ===
+              normalizeVariantName(history.variantName) &&
             new Date(batch.importDate) <= new Date(history.created_at || 0),
         );
 
       let inferredOutbound = 0;
 
-      for (const history of outbound) {
+      for (const history of normalizedOutbound) {
         let remaining = Math.abs(n(history.qty));
         const candidates = getCurrentGroup(history);
 
@@ -598,30 +961,42 @@ const rebuildHistoricalBatchesAsync = async (req, res) => {
           if (remaining <= 0) break;
 
           const take = Math.min(n(batch.remainingQty), remaining);
+
           batch.remainingQty -= take;
           remaining -= take;
         }
 
-        if (remaining > 0) inferredOutbound += remaining;
+        if (remaining > 0) {
+          inferredOutbound += remaining;
+        }
       }
 
       const products = await Product.find({}).session(session).lean();
+
       let openingBatches = 0;
       let discrepancy = 0;
 
       for (const product of products) {
-        const rows = product.variants?.length
-          ? product.variants.map((variant) => ({
-              variantName: clean(variant.name),
+        const rows = getVariants(product).length
+          ? getVariants(product).map((variant) => ({
+              variantName: normalizeVariantName(variant.name),
+              variantCode: normalizeVariantCode(variant.variantCode),
               qty: n(variant.qty),
             }))
-          : [{ variantName: "", qty: n(product.qty) }];
+          : [
+              {
+                variantName: "",
+                variantCode: "",
+                qty: n(product.qty),
+              },
+            ];
 
         for (const row of rows) {
           const related = batches.filter(
             (batch) =>
               String(batch.productId) === String(product._id) &&
-              clean(batch.variantName) === row.variantName,
+              normalizeVariantCode(batch.variantCode) === row.variantCode &&
+              normalizeVariantName(batch.variantName) === row.variantName,
           );
 
           const calculated = related.reduce(
@@ -630,24 +1005,30 @@ const rebuildHistoricalBatchesAsync = async (req, res) => {
           );
 
           const delta = row.qty - calculated;
+
           discrepancy += Math.abs(delta);
 
           if (delta > 0) {
+            const variantKey =
+              row.variantCode ||
+              Buffer.from(row.variantName || "BASE")
+                .toString("hex")
+                .slice(0, 16) ||
+              "BASE";
+
             batches.push({
-              batchCode:
-                `OPEN-${String(product._id).slice(-6)}-` +
-                (Buffer.from(row.variantName).toString("hex").slice(0, 16) ||
-                  "BASE"),
+              batchCode: `OPEN-${String(product._id).slice(-6)}-${variantKey}`,
               productId: product._id,
               productTitle: product.title || "",
               productCode: getCode(product),
+              variantCode: row.variantCode,
               variantName: row.variantName,
               importDate: product.created_at || new Date(),
               importQty: delta,
               remainingQty: delta,
               unitCost: 0,
-              source: "opening",
-              sourceConfidence: "unknown",
+              source: "OPENING",
+              sourceConfidence: "low",
               note: "Tồn đầu kỳ chưa xác định được phiếu/lô nhập gốc",
             });
 
@@ -659,6 +1040,7 @@ const rebuildHistoricalBatchesAsync = async (req, res) => {
               if (need <= 0) break;
 
               const take = Math.min(n(batch.remainingQty), need);
+
               batch.remainingQty -= take;
               need -= take;
             }
@@ -676,13 +1058,13 @@ const rebuildHistoricalBatchesAsync = async (req, res) => {
       }
 
       report = {
-        importedHistoryRows: imports.length,
-        outboundHistoryRows: outbound.length,
+        importedHistoryRows: normalizedImports.length,
+        outboundHistoryRows: normalizedOutbound.length,
         createdBatches: validBatches.length,
         openingBatches,
         unlinkedHistoricalOutboundQty: inferredOutbound,
         absoluteReconciliationDifferenceBeforeOpening: discrepancy,
-        note: "Xuất lịch sử được phân bổ FIFO để tái dựng báo cáo; không thể xác nhận vật lý từng món thuộc lô nào nếu dữ liệu cũ không lưu batchId.",
+        note: "Lịch sử cũ được phân bổ FIFO theo variantCode. Dữ liệu không có mã biến thể chỉ được đối chiếu theo tên nếu tên duy nhất trong Product.",
       };
     });
 
@@ -702,6 +1084,10 @@ const rebuildHistoricalBatchesAsync = async (req, res) => {
     await session.endSession();
   }
 };
+
+// =====================================================
+// PHÂN BỔ TỒN KHO HIỆN TẠI VÀO LÔ OPENING
+// =====================================================
 
 const backfillCurrentStockAsync = async (req, res) => {
   const session = await mongoose.startSession();
@@ -723,25 +1109,39 @@ const backfillCurrentStockAsync = async (req, res) => {
       let updatedBatches = 0;
       let allocatedQty = 0;
       let alreadyMatched = 0;
+
       const mismatches = [];
 
       for (const product of products) {
-        const stockRows = product.variants?.length
-          ? product.variants.map((variant) => ({
-              variantName: clean(variant.name),
+        const stockRows = getVariants(product).length
+          ? getVariants(product).map((variant) => ({
+              variantName: normalizeVariantName(variant.name),
+              variantCode: normalizeVariantCode(variant.variantCode),
               productQty: Math.max(0, n(variant.qty)),
             }))
-          : [{ variantName: "", productQty: Math.max(0, n(product.qty)) }];
+          : [
+              {
+                variantName: "",
+                variantCode: "",
+                productQty: Math.max(0, n(product.qty)),
+              },
+            ];
 
         for (const row of stockRows) {
+          const variant =
+            row.variantCode || row.variantName
+              ? findVariant(product, row.variantName, row.variantCode)
+              : null;
+
+          const batchFilter = buildBatchFilter({
+            product,
+            productId: product._id,
+            variant,
+            activeOnly: true,
+          });
+
           const existingRows = await InventoryBatch.aggregate([
-            {
-              $match: {
-                productId: product._id,
-                variantName: row.variantName,
-                isActive: true,
-              },
-            },
+            { $match: batchFilter },
             {
               $group: {
                 _id: null,
@@ -762,6 +1162,7 @@ const backfillCurrentStockAsync = async (req, res) => {
             mismatches.push({
               productId: product._id,
               productTitle: product.title || "",
+              variantCode: row.variantCode,
               variantName: row.variantName,
               productQty: row.productQty,
               batchQty,
@@ -769,31 +1170,38 @@ const backfillCurrentStockAsync = async (req, res) => {
               reason:
                 "Tổng tồn các lô lớn hơn tồn Product; cần kiểm tra trước khi xử lý.",
             });
+
             continue;
           }
 
           const variantKey =
+            row.variantCode ||
             Buffer.from(row.variantName || "BASE")
               .toString("hex")
-              .slice(0, 16) || "BASE";
+              .slice(0, 16) ||
+            "BASE";
 
           const batchCode = `OPEN-${String(product._id).slice(-8)}-${variantKey}`;
 
-          let openingBatch = await InventoryBatch.findOne({
+          const openingBatch = await InventoryBatch.findOne({
             productId: product._id,
+            variantCode: row.variantCode,
             variantName: row.variantName,
-            source: "opening",
+            source: "OPENING",
             batchCode,
           }).session(session);
 
           if (openingBatch) {
             openingBatch.importQty = n(openingBatch.importQty) + difference;
+
             openingBatch.remainingQty =
               n(openingBatch.remainingQty) + difference;
+
             openingBatch.note =
               "Tồn hiện tại chưa được liên kết với phiếu/lô nhập gốc; được bổ sung bởi chức năng phân bổ tồn hàng loạt.";
 
             await openingBatch.save({ session });
+
             updatedBatches++;
           } else {
             await InventoryBatch.create(
@@ -803,13 +1211,14 @@ const backfillCurrentStockAsync = async (req, res) => {
                   productId: product._id,
                   productTitle: product.title || "",
                   productCode: getCode(product),
+                  variantCode: row.variantCode,
                   variantName: row.variantName,
                   importDate: product.created_at || new Date(),
                   importQty: difference,
                   remainingQty: difference,
                   unitCost: 0,
-                  source: "opening",
-                  sourceConfidence: "unknown",
+                  source: "OPENING",
+                  sourceConfidence: "low",
                   note: "Tồn hiện tại chưa được liên kết với phiếu/lô nhập gốc; tạo tự động khi phân bổ tồn hàng loạt.",
                   createdBy: req.user?._id || null,
                 },
@@ -832,7 +1241,7 @@ const backfillCurrentStockAsync = async (req, res) => {
         alreadyMatched,
         mismatchCount: mismatches.length,
         mismatches: mismatches.slice(0, 100),
-        note: "Không thay đổi Product.qty/Variant.qty. Tồn chưa rõ nguồn được ghi vào lô OPENING với giá vốn 0 và sourceConfidence=unknown; không khẳng định đó là một lô nhập lịch sử cụ thể.",
+        note: "Không thay đổi Product.qty/Variant.qty. Tồn chưa rõ nguồn được ghi vào lô OPENING với giá vốn 0 và sourceConfidence=low.",
       };
     });
 
@@ -853,6 +1262,10 @@ const backfillCurrentStockAsync = async (req, res) => {
   }
 };
 
+// =====================================================
+// ĐỐI CHIẾU TỒN PRODUCT VÀ TỔNG TỒN CÁC LÔ
+// =====================================================
+
 const getBatchReconciliationAsync = async (_req, res) => {
   try {
     const products = await Product.find({})
@@ -862,22 +1275,35 @@ const getBatchReconciliationAsync = async (_req, res) => {
     const rows = [];
 
     for (const product of products) {
-      const variants = product.variants?.length
-        ? product.variants.map((variant) => ({
-            variantName: clean(variant.name),
+      const variants = getVariants(product).length
+        ? getVariants(product).map((variant) => ({
+            variantName: normalizeVariantName(variant.name),
+            variantCode: normalizeVariantCode(variant.variantCode),
             productQty: n(variant.qty),
           }))
-        : [{ variantName: "", productQty: n(product.qty) }];
-
-      for (const variant of variants) {
-        const batchRows = await InventoryBatch.aggregate([
-          {
-            $match: {
-              productId: product._id,
-              variantName: variant.variantName,
-              isActive: true,
+        : [
+            {
+              variantName: "",
+              variantCode: "",
+              productQty: n(product.qty),
             },
-          },
+          ];
+
+      for (const row of variants) {
+        const variant =
+          row.variantCode || row.variantName
+            ? findVariant(product, row.variantName, row.variantCode)
+            : null;
+
+        const batchFilter = buildBatchFilter({
+          product,
+          productId: product._id,
+          variant,
+          activeOnly: true,
+        });
+
+        const batchRows = await InventoryBatch.aggregate([
+          { $match: batchFilter },
           {
             $group: {
               _id: null,
@@ -889,15 +1315,17 @@ const getBatchReconciliationAsync = async (_req, res) => {
 
         const batchQty = n(batchRows[0]?.batchQty);
 
-        if (batchQty !== variant.productQty) {
+        if (batchQty !== row.productQty) {
           rows.push({
             productId: product._id,
             productTitle: product.title,
             productCode: getCode(product),
-            variantName: variant.variantName,
-            productQty: variant.productQty,
+            variantCode: row.variantCode,
+            variantName: row.variantName,
+            productQty: row.productQty,
             batchQty,
-            difference: variant.productQty - batchQty,
+            batchCount: n(batchRows[0]?.batchCount),
+            difference: row.productQty - batchQty,
           });
         }
       }
@@ -909,19 +1337,19 @@ const getBatchReconciliationAsync = async (_req, res) => {
       rows,
     });
   } catch (error) {
+    console.error("getBatchReconciliationAsync:", error);
+
     return res.status(500).json({
       success: false,
       message: error.message || "Không thể đối chiếu tồn kho",
     });
   }
 };
-/*
- * Nhập một lô:
- * - Tạo một InventoryReceipt.
- * - Tạo một InventoryBatch.
- * - Tạo InventoryHistory liên kết đến InventoryReceipt và InventoryBatch.
- * - Tất cả cùng transaction.
- */
+
+// =====================================================
+// NHẬP MỘT LÔ
+// =====================================================
+
 const importNewBatchAsync = async (req, res) => {
   const session = await mongoose.startSession();
 
@@ -929,6 +1357,7 @@ const importNewBatchAsync = async (req, res) => {
     const {
       productId,
       variantName = "",
+      variantCode = "",
       qty,
       unitCost = 0,
       importDate,
@@ -943,7 +1372,7 @@ const importNewBatchAsync = async (req, res) => {
     const importQty = Number(qty);
     const cost = Number(unitCost);
 
-    if (!Number.isInteger(importQty) || importQty <= 0) {
+    if (!Number.isSafeInteger(importQty) || importQty <= 0) {
       throw new Error("Số lượng nhập phải là số nguyên dương");
     }
 
@@ -957,31 +1386,27 @@ const importNewBatchAsync = async (req, res) => {
       throw new Error("Ngày nhập không hợp lệ");
     }
 
-    const normalizedVariant = clean(variantName);
     let result;
 
     await session.withTransaction(async () => {
       const product = await Product.findById(productId).session(session);
 
-      if (!product) throw new Error("Không tìm thấy sản phẩm");
-
-      const variant = findVariant(product, normalizedVariant);
-      const hasVariants =
-        Array.isArray(product.variants) && product.variants.length > 0;
-
-      if (hasVariants && !normalizedVariant) {
-        throw new Error("Vui lòng chọn biến thể cần nhập");
+      if (!product) {
+        throw new Error("Không tìm thấy sản phẩm");
       }
 
-      if (hasVariants && !variant) {
-        throw new Error("Biến thể không tồn tại");
-      }
+      const identity = resolveVariantIdentity(
+        product,
+        variantName,
+        variantCode,
+      );
 
-      if (!hasVariants && normalizedVariant) {
-        throw new Error("Sản phẩm không có biến thể");
-      }
+      const variant = identity.variant;
+      const normalizedVariantName = identity.variantName;
+      const normalizedVariantCode = identity.variantCode;
 
       const beforeQty = n(product.qty);
+
       let beforeVariantQty = null;
       let afterVariantQty = null;
 
@@ -1008,7 +1433,8 @@ const importNewBatchAsync = async (req, res) => {
               {
                 productId: product._id,
                 productTitle: product.title || "",
-                variantName: normalizedVariant,
+                variantCode: normalizedVariantCode,
+                variantName: normalizedVariantName,
                 qty: importQty,
                 unitCost: cost,
                 total: importQty * cost,
@@ -1033,14 +1459,15 @@ const importNewBatchAsync = async (req, res) => {
         productId: product._id,
         productTitle: product.title || "",
         productCode: getCode(product),
-        variantName: normalizedVariant,
+        variantCode: normalizedVariantCode,
+        variantName: normalizedVariantName,
         importDate: date,
         importQty,
         remainingQty: importQty,
         unitCost: cost,
         importReceiptId: receipt._id,
-        source: "manual",
-        sourceConfidence: "recorded",
+        source: "IMPORT",
+        sourceConfidence: "high",
         note: clean(note),
         createdBy: req.user?._id || null,
         isActive: true,
@@ -1056,7 +1483,8 @@ const importNewBatchAsync = async (req, res) => {
         productId: product._id,
         productTitle: product.title || "",
         productCode: getCode(product),
-        variantName: normalizedVariant,
+        variantCode: normalizedVariantCode,
+        variantName: normalizedVariantName,
         batchId: batch._id,
         batchCode: batch.batchCode,
         unitCost: cost,
@@ -1091,7 +1519,8 @@ const importNewBatchAsync = async (req, res) => {
           _id: product._id,
           title: product.title,
           qty: product.qty,
-          variantName: normalizedVariant,
+          variantCode: normalizedVariantCode,
+          variantName: normalizedVariantName,
           variantQty: afterVariantQty,
         },
       };
@@ -1114,12 +1543,10 @@ const importNewBatchAsync = async (req, res) => {
   }
 };
 
-/*
- * Nhập nhiều lô:
- * - Một request tạo một InventoryReceipt.
- * - Mỗi dòng tạo một InventoryBatch và một InventoryHistory.
- * - Các lịch sử cùng referenceId/referenceCode của phiếu nhập.
- */
+// =====================================================
+// NHẬP NHIỀU LÔ TRONG MỘT PHIẾU
+// =====================================================
+
 const importMultipleBatchesAsync = async (req, res) => {
   const session = await mongoose.startSession();
 
@@ -1162,7 +1589,8 @@ const importMultipleBatchesAsync = async (req, res) => {
 
       return {
         productId: item.productId,
-        variantName: clean(item.variantName),
+        variantName: normalizeVariantName(item.variantName),
+        variantCode: normalizeVariantCode(item.variantCode),
         qty,
         unitCost,
       };
@@ -1228,33 +1656,21 @@ const importMultipleBatchesAsync = async (req, res) => {
           productCache.set(cacheKey, product);
         }
 
-        const hasVariants =
-          Array.isArray(product.variants) && product.variants.length > 0;
+        let identity;
 
-        let variant = null;
-        let variantName = "";
-
-        if (hasVariants) {
-          variantName = clean(item.variantName);
-
-          if (!variantName) {
-            throw new Error(
-              `Dòng ${i + 1}: vui lòng chọn phân loại cho ${product.title}`,
-            );
-          }
-
-          variant = findVariant(product, variantName);
-
-          if (!variant) {
-            throw new Error(
-              `Dòng ${i + 1}: không tìm thấy phân loại "${variantName}" của ${product.title}`,
-            );
-          }
-        } else if (item.variantName) {
-          throw new Error(
-            `Dòng ${i + 1}: sản phẩm ${product.title} không có phân loại`,
+        try {
+          identity = resolveVariantIdentity(
+            product,
+            item.variantName,
+            item.variantCode,
           );
+        } catch (error) {
+          throw new Error(`Dòng ${i + 1}: ${error.message}`);
         }
+
+        const variant = identity.variant;
+        const variantName = identity.variantName;
+        const variantCode = identity.variantCode;
 
         const beforeQty = n(product.qty);
         const beforeVariantQty = variant ? n(variant.qty) : beforeQty;
@@ -1266,6 +1682,7 @@ const importMultipleBatchesAsync = async (req, res) => {
         }
 
         product.updated_at = new Date();
+
         await product.save({ session });
 
         const batchCode = makeBatchCode(importDate);
@@ -1275,14 +1692,15 @@ const importMultipleBatchesAsync = async (req, res) => {
           productId: product._id,
           productTitle: product.title || "",
           productCode: getCode(product),
+          variantCode,
           variantName,
           importDate,
           importQty: item.qty,
           remainingQty: item.qty,
           unitCost: item.unitCost,
           importReceiptId: receipt._id,
-          source: "manual",
-          sourceConfidence: "recorded",
+          source: "IMPORT",
+          sourceConfidence: "high",
           note: [supplier ? `Nhà cung cấp: ${supplier}` : "", note]
             .filter(Boolean)
             .join(" | "),
@@ -1300,6 +1718,7 @@ const importMultipleBatchesAsync = async (req, res) => {
           productId: product._id,
           productTitle: product.title || "",
           productCode: getCode(product),
+          variantCode,
           variantName,
           batchId: batch._id,
           batchCode,
@@ -1328,6 +1747,7 @@ const importMultipleBatchesAsync = async (req, res) => {
         receiptItems.push({
           productId: product._id,
           productTitle: product.title || "",
+          variantCode,
           variantName,
           qty: item.qty,
           unitCost: item.unitCost,
@@ -1339,6 +1759,7 @@ const importMultipleBatchesAsync = async (req, res) => {
           batchCode,
           productId: product._id,
           productTitle: product.title || "",
+          variantCode,
           variantName,
           qty: item.qty,
           unitCost: item.unitCost,
@@ -1387,12 +1808,11 @@ const importMultipleBatchesAsync = async (req, res) => {
     await session.endSession();
   }
 };
+
 // =====================================================
 // ĐỒNG BỘ GIÁ VỐN LÔ NHẬP
-// Chỉ cập nhật lô chưa có giá vốn
-// Lấy giá từ Product.variants[].defaultPrice
-// Đơn vị: CNY
 // =====================================================
+
 const syncBatchUnitCosts = async (req, res) => {
   try {
     const batches = await InventoryBatch.find({
@@ -1411,22 +1831,15 @@ const syncBatchUnitCosts = async (req, res) => {
       ),
     ];
 
-    // Lấy sản phẩm một lần, tránh query lặp
     const products = await Product.find({
       _id: { $in: productIds },
     })
-      .select("_id title variants")
+      .select("_id title price defaultPrice variants")
       .lean();
 
     const productMap = new Map(
       products.map((product) => [String(product._id), product]),
     );
-
-    const normalize = (value) =>
-      String(value || "")
-        .trim()
-        .toLowerCase()
-        .replace(/\s+/g, "");
 
     let updated = 0;
     let skipped = 0;
@@ -1450,17 +1863,47 @@ const syncBatchUnitCosts = async (req, res) => {
           continue;
         }
 
-        const variant = (product.variants || []).find(
-          (item) => normalize(item.name) === normalize(batch.variantName),
-        );
+        let sourceVariant = null;
 
-        if (!variant) {
+        if (hasVariants(product)) {
+          const variantCode = normalizeVariantCode(batch.variantCode);
+          const variantName = normalizeVariantName(batch.variantName);
+
+          if (variantCode) {
+            sourceVariant = getVariants(product).find(
+              (item) => normalizeVariantCode(item.variantCode) === variantCode,
+            );
+          } else if (variantName) {
+            const matched = getVariants(product).filter(
+              (item) => normalizeVariantName(item.name) === variantName,
+            );
+
+            if (matched.length > 1) {
+              skipped++;
+
+              details.push({
+                batchCode: batch.batchCode,
+                productTitle: product.title,
+                variantName,
+                status: "skipped",
+                reason: "Tên biến thể bị trùng và lô chưa có variantCode",
+              });
+
+              continue;
+            }
+
+            sourceVariant = matched[0] || null;
+          }
+        }
+
+        if (hasVariants(product) && !sourceVariant) {
           skipped++;
 
           details.push({
             batchCode: batch.batchCode,
             productTitle: product.title,
-            variantName: batch.variantName,
+            variantCode: batch.variantCode || "",
+            variantName: batch.variantName || "",
             status: "skipped",
             reason: "Không tìm thấy biến thể tương ứng",
           });
@@ -1468,7 +1911,11 @@ const syncBatchUnitCosts = async (req, res) => {
           continue;
         }
 
-        const unitCost = Number(variant.defaultPrice);
+        const unitCost = Number(
+          sourceVariant
+            ? sourceVariant.defaultPrice
+            : (product.defaultPrice ?? product.price),
+        );
 
         if (!Number.isFinite(unitCost) || unitCost <= 0) {
           skipped++;
@@ -1476,15 +1923,16 @@ const syncBatchUnitCosts = async (req, res) => {
           details.push({
             batchCode: batch.batchCode,
             productTitle: product.title,
-            variantName: batch.variantName,
+            variantCode: batch.variantCode || "",
+            variantName: batch.variantName || "",
             status: "skipped",
-            reason: "Biến thể chưa có giá vốn hợp lệ",
+            reason: "Không có giá vốn hợp lệ",
           });
 
           continue;
         }
 
-        const result = await InventoryBatch.updateOne(
+        const updateResult = await InventoryBatch.updateOne(
           {
             _id: batch._id,
             $or: [
@@ -1496,24 +1944,22 @@ const syncBatchUnitCosts = async (req, res) => {
           {
             $set: {
               unitCost,
-              sourceConfidence: "inferred",
-              note: [
-                batch.note,
-                "Đồng bộ giá vốn từ Product.variants.defaultPrice",
-              ]
+              sourceConfidence: "medium",
+              note: [batch.note, "Đồng bộ giá vốn từ Product.defaultPrice"]
                 .filter(Boolean)
                 .join(" | "),
             },
           },
         );
 
-        if (result.modifiedCount > 0) {
+        if (updateResult.modifiedCount > 0) {
           updated++;
 
           details.push({
             batchCode: batch.batchCode,
             productTitle: product.title,
-            variantName: batch.variantName,
+            variantCode: batch.variantCode || "",
+            variantName: batch.variantName || "",
             unitCost,
             currency: "CNY",
             status: "updated",
@@ -1559,6 +2005,10 @@ const syncBatchUnitCosts = async (req, res) => {
     });
   }
 };
+
+// =====================================================
+// EXPORT
+// =====================================================
 
 module.exports = {
   listInventoryBatchesAsync,

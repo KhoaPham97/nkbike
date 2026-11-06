@@ -1,5 +1,9 @@
 const mongoose = require("mongoose");
 
+// =====================================================
+// SHOPEE ORDER ITEM
+// =====================================================
+
 const shopeeOrderItemSchema = new mongoose.Schema(
   {
     itemId: {
@@ -32,15 +36,10 @@ const shopeeOrderItemSchema = new mongoose.Schema(
       default: "",
     },
 
-    // Số lượng khách đặt trên Shopee.
     quantity: {
       type: Number,
-      default: 0,
-      min: 0,
-      validate: {
-        validator: Number.isInteger,
-        message: "quantity phải là số nguyên không âm",
-      },
+      default: 1,
+      min: 1,
     },
 
     unitPrice: {
@@ -54,6 +53,10 @@ const shopeeOrderItemSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+
+    // =================================================
+    // MAPPING SNAPSHOT
+    // =================================================
 
     productId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -70,6 +73,7 @@ const shopeeOrderItemSchema = new mongoose.Schema(
     variantName: {
       type: String,
       default: "",
+      trim: true,
     },
 
     mappingStatus: {
@@ -78,33 +82,50 @@ const shopeeOrderItemSchema = new mongoose.Schema(
       default: "unmapped",
     },
 
-    // Số lượng đã trừ khỏi kho thực tế.
-    // Đây là quantity sau khi nhân quantityMultiplier.
+    quantityMultiplier: {
+      type: Number,
+      default: 1,
+      min: 0.000001,
+    },
+
+    allowStockDeduction: {
+      type: Boolean,
+      default: false,
+    },
+
+    // =================================================
+    // INVENTORY TRACKING
+    // =================================================
+
+    // Số lượng đang giữ cho đơn này.
+    reservedQty: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    // Số lượng đã xuất kho thực tế.
     deductedQty: {
       type: Number,
       default: 0,
       min: 0,
-      validate: {
-        validator: Number.isInteger,
-        message: "deductedQty phải là số nguyên không âm",
-      },
     },
 
-    // Số lượng đã được xử lý trả hàng.
+    // Số lượng đã nhận hàng hoàn.
     returnedQty: {
       type: Number,
       default: 0,
       min: 0,
-      validate: {
-        validator: Number.isInteger,
-        message: "returnedQty phải là số nguyên không âm",
-      },
     },
   },
   {
     _id: false,
   },
 );
+
+// =====================================================
+// SHOPEE ORDER
+// =====================================================
 
 const shopeeOrderSchema = new mongoose.Schema(
   {
@@ -126,16 +147,6 @@ const shopeeOrderSchema = new mongoose.Schema(
       index: true,
     },
 
-    currency: {
-      type: String,
-      default: "VND",
-    },
-
-    buyerUserId: {
-      type: String,
-      default: "",
-    },
-
     buyerUsername: {
       type: String,
       default: "",
@@ -152,19 +163,18 @@ const shopeeOrderSchema = new mongoose.Schema(
     },
 
     recipientAddress: {
-      type: mongoose.Schema.Types.Mixed,
-      default: null,
-    },
-
-    totalAmount: {
-      type: Number,
-      default: 0,
-      min: 0,
+      type: String,
+      default: "",
     },
 
     paymentMethod: {
       type: String,
       default: "",
+    },
+
+    totalAmount: {
+      type: Number,
+      default: 0,
     },
 
     shippingCarrier: {
@@ -182,30 +192,24 @@ const shopeeOrderSchema = new mongoose.Schema(
       default: null,
     },
 
-    payTime: {
-      type: Date,
-      default: null,
-    },
-
-    cancelReason: {
-      type: String,
-      default: "",
-    },
-
-    cancelBy: {
-      type: String,
-      default: "",
-    },
-
-    buyerCancelReason: {
-      type: String,
-      default: "",
-    },
-
     items: {
       type: [shopeeOrderItemSchema],
       default: [],
     },
+
+    rawData: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+
+    lastSyncedAt: {
+      type: Date,
+      default: Date.now,
+    },
+
+    // =================================================
+    // STOCK STATUS
+    // =================================================
 
     stockStatus: {
       type: String,
@@ -221,6 +225,23 @@ const shopeeOrderSchema = new mongoose.Schema(
       index: true,
     },
 
+    // Đơn đã được xuất kho vật lý hoàn toàn hay chưa.
+    stockDeducted: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
+    stockReservedAt: {
+      type: Date,
+      default: null,
+    },
+
+    stockReleasedAt: {
+      type: Date,
+      default: null,
+    },
+
     stockDeductedAt: {
       type: Date,
       default: null,
@@ -228,18 +249,26 @@ const shopeeOrderSchema = new mongoose.Schema(
 
     stockDeductedBy: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
+      ref: "admins",
       default: null,
     },
 
-    lastSyncedAt: {
+    stockReturnedAt: {
       type: Date,
-      default: Date.now,
+      default: null,
     },
 
-    rawData: {
-      type: mongoose.Schema.Types.Mixed,
-      default: null,
+    // Đánh dấu đã nhận đủ hàng hoàn của đơn.
+    returnReceived: {
+      type: Boolean,
+      default: false,
+    },
+
+    // Tổng số lượng đã nhận hoàn.
+    returnedQty: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
   },
   {
@@ -248,7 +277,10 @@ const shopeeOrderSchema = new mongoose.Schema(
   },
 );
 
-// Mỗi đơn chỉ được lưu một lần trong mỗi shop.
+// =====================================================
+// INDEX
+// =====================================================
+
 shopeeOrderSchema.index(
   {
     shopId: 1,
@@ -261,12 +293,8 @@ shopeeOrderSchema.index(
 
 shopeeOrderSchema.index({
   shopId: 1,
-  createTime: -1,
-});
-
-shopeeOrderSchema.index({
-  shopId: 1,
   orderStatus: 1,
+  updateTime: -1,
 });
 
 shopeeOrderSchema.index({
@@ -274,6 +302,8 @@ shopeeOrderSchema.index({
   stockStatus: 1,
 });
 
-module.exports =
+const ShopeeOrder =
   mongoose.models.ShopeeOrder ||
   mongoose.model("ShopeeOrder", shopeeOrderSchema);
+
+module.exports = ShopeeOrder;

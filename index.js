@@ -5,7 +5,7 @@ const http = require("http");
 const cors = require("cors");
 
 const { Server } = require("socket.io");
-
+const { startShopeeAutoStockJob } = require("./src/jobs/shopeeAutoStockJob");
 const chatRoutes = require("./src/routes/chatRoute");
 const setupChatSocket = require("./src/socket/chatSocket");
 const setupStockNotificationSocket = require("./src/socket/stockNotificationSocket");
@@ -102,8 +102,16 @@ app.get("/", (req, res) => {
 
 const PORT = process.env.PORT || 3001;
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(
     `Server has started successfully in ${process.env.NODE_ENV} mode at port ${PORT}`,
   );
+  // Khởi động Cron Job Shopee.
+
+  try {
+    await startShopeeAutoStockJob();
+    console.log("[Shopee Auto Stock] Khởi tạo thành công.");
+  } catch (error) {
+    console.error("[Shopee Auto Stock] Không thể khởi tạo Job:", error);
+  }
 });

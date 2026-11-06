@@ -952,8 +952,8 @@ async function restockShopeeReturnItem({
 
           unitCost: Number(variant.unitCost || 0),
 
-          source: "manual",
-          sourceConfidence: "recorded",
+          source: "RETURN",
+          sourceConfidence: "high",
 
           note: note || `Nhập hàng tốt hoàn Shopee ${returnSn}`,
 

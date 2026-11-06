@@ -29,30 +29,72 @@ function getItemKey(itemId, modelId) {
 // 1. DANH SÁCH ÁNH XẠ SKU
 // GET /api/shopee/management/sku-mappings
 // =====================================================
+exports.getShopsAsync = async (req, res) => {
+  try {
+    const shops = await ShopeeShop.find({}).sort({ createdAt: -1 }).lean();
 
+    return res.json({
+      success: true,
+      data: shops,
+      total: shops.length,
+    });
+  } catch (error) {
+    console.error("[Shopee Shop] getShopsAsync:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Không thể lấy danh sách shop Shopee.",
+    });
+  }
+};
 exports.getSkuMappings = async (req, res) => {
   try {
-    const shopId = getShopId(req);
+    const { shopId, keyword, status } = req.query;
 
-    if (!shopId) {
-      return res.status(400).json({
-        success: false,
-        message: "Thiếu shopId",
-      });
+    const filter = {};
+
+    if (shopId) {
+      filter.shopId = String(shopId);
     }
 
-    const mappings = await ShopeeSkuMapping.find({ shopId })
-      .populate("productId", "title variants")
-      .sort({ updatedAt: -1 });
+    if (status === "active") {
+      filter.isActive = true;
+    } else if (status === "disabled") {
+      filter.isActive = false;
+    }
+
+    if (keyword) {
+      const regex = new RegExp(
+        String(keyword).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        "i",
+      );
+
+      filter.$or = [
+        { itemName: regex },
+        { modelName: regex },
+        { itemSku: regex },
+        { variationSku: regex },
+        { variantCode: regex },
+        { variantName: regex },
+      ];
+    }
+
+    const mappings = await ShopeeSkuMapping.find(filter)
+      .populate("productId", "title thumbnail variants")
+      .sort({ updatedAt: -1 })
+      .lean();
 
     return res.json({
       success: true,
       data: mappings,
+      total: mappings.length,
     });
   } catch (error) {
+    console.error("getSkuMappings:", error);
+
     return res.status(500).json({
       success: false,
-      message: getErrorMessage(error),
+      message: error.message,
     });
   }
 };
@@ -75,60 +117,53 @@ exports.saveSkuMapping = async (req, res) => {
       productId,
       variantCode,
       variantName,
-      quantityMultiplier = 1,
-      note = "",
+      quantityMultiplier,
+      allowStockDeduction,
+      note,
     } = req.body;
 
-    if (!shopId || !itemId || !productId || !variantCode || !variantName) {
+    if (!shopId || !itemId || !productId || !variantCode) {
       return res.status(400).json({
         success: false,
-        message:
-          "Vui lòng nhập đủ shopId, itemId, productId, variantCode và variantName",
+        message: "Thiếu shopId, itemId, productId hoặc variantCode",
       });
     }
 
-    if (!mongoose.isValidObjectId(productId)) {
+    if (!mongoose.Types.ObjectId.isValid(productId)) {
       return res.status(400).json({
         success: false,
         message: "productId không hợp lệ",
       });
     }
 
-    const multiplier = Number(quantityMultiplier);
+    const multiplier = Number(quantityMultiplier || 1);
 
-    if (!Number.isInteger(multiplier) || multiplier <= 0) {
+    if (!Number.isInteger(multiplier) || multiplier < 1) {
       return res.status(400).json({
         success: false,
-        message: "quantityMultiplier phải là số nguyên dương",
+        message: "quantityMultiplier phải là số nguyên lớn hơn 0",
       });
     }
 
-    const product = await Product.findById(productId);
+    const product = await Product.findById(productId).lean();
 
     if (!product) {
       return res.status(404).json({
         success: false,
-        message: "Không tìm thấy sản phẩm",
+        message: "Không tìm thấy sản phẩm nội bộ",
       });
     }
 
-    const variants = (product.variants || []).filter((variant) => {
-      const savedCode = String(
-        variant.variantCode || variant.code || variant.sku || "",
-      ).trim();
+    const variant = (product.variants || []).find((item) => {
+      const code = String(item.variantCode || item.code || item.sku || "");
 
-      const savedName = String(variant.name || "").trim();
-
-      return (
-        savedCode === String(variantCode).trim() &&
-        savedName === String(variantName).trim()
-      );
+      return code === String(variantCode);
     });
-    if (variants.length !== 1) {
-      return res.status(400).json({
+
+    if (!variant) {
+      return res.status(404).json({
         success: false,
-        message:
-          "Không tìm thấy duy nhất một biến thể khớp variantCode và variantName",
+        message: "Không tìm thấy biến thể tương ứng trong sản phẩm",
       });
     }
 
@@ -142,40 +177,46 @@ exports.saveSkuMapping = async (req, res) => {
       },
       {
         $set: {
+          shopId: String(shopId),
+          itemId: String(itemId),
+          modelId: normalizedModelId,
+
           itemSku: itemSku || "",
           variationSku: variationSku || "",
           itemName: itemName || "",
           modelName: modelName || "",
 
           productId: product._id,
-          variantCode: String(variantCode).trim(),
-          variantName: String(variantName).trim(),
+          variantCode: String(variantCode),
+          variantName: variant.name || variantName || "",
 
           quantityMultiplier: multiplier,
-          active: true,
-          note,
-          updatedBy: req.user?._id || null,
-        },
-        $setOnInsert: {
-          createdBy: req.user?._id || null,
+
+          allowStockDeduction: allowStockDeduction === true,
+
+          isActive: true,
+          note: note || "",
         },
       },
       {
         new: true,
         upsert: true,
         runValidators: true,
+        setDefaultsOnInsert: true,
       },
     );
 
     return res.json({
       success: true,
-      message: "Đã lưu ánh xạ SKU",
+      message: "Lưu ánh xạ SKU thành công",
       data: mapping,
     });
   } catch (error) {
+    console.error("saveSkuMapping:", error);
+
     return res.status(500).json({
       success: false,
-      message: getErrorMessage(error),
+      message: error.message,
     });
   }
 };
@@ -187,10 +228,18 @@ exports.saveSkuMapping = async (req, res) => {
 
 exports.disableSkuMapping = async (req, res) => {
   try {
+    const { id } = req.params;
+
     const mapping = await ShopeeSkuMapping.findByIdAndUpdate(
-      req.params.id,
-      { $set: { active: false } },
-      { new: true },
+      id,
+      {
+        $set: {
+          isActive: false,
+        },
+      },
+      {
+        new: true,
+      },
     );
 
     if (!mapping) {
@@ -206,13 +255,14 @@ exports.disableSkuMapping = async (req, res) => {
       data: mapping,
     });
   } catch (error) {
+    console.error("disableSkuMapping:", error);
+
     return res.status(500).json({
       success: false,
-      message: getErrorMessage(error),
+      message: error.message,
     });
   }
 };
-
 // =====================================================
 // 4. DANH SÁCH ĐƠN SHOPEE ĐÃ LƯU
 // GET /api/shopee/management/orders

@@ -3,72 +3,214 @@ const router = express.Router();
 
 const { auth, adminOnly } = require("../middlewares/auth");
 
-const controller = require("../controllers/shopeeController");
-const shopeeInventoryController = require("../controllers/shopeeInventoryController");
-const shopeeProductController = require("../controllers/shopeeProductController");
+const shopeeController = require("../controllers/shopeeController");
+const shopeeOrderController = require("../controllers/shopeeOrderController");
+const shopeeStockController = require("../controllers/shopeeStockController");
+const shopeeAutoStockController = require("../controllers/shopeeAutoStockController");
+const adminAuth = [auth, adminOnly];
 
 // =====================================================
-// SHOPEE CALLBACK
-// Shopee gọi trực tiếp, không yêu cầu JWT
+// AUTHENTICATION & SHOP MANAGEMENT
 // =====================================================
 
-router.get("/callback", controller.shopeeCallback);
+router.post("/auth", ...adminAuth, shopeeController.connectShopee);
 
-// =====================================================
-// QUẢN LÝ SHOP VÀ ĐƠN HÀNG
-// =====================================================
+router.get("/callback", shopeeController.shopeeCallback);
 
-router.post("/auth", auth, adminOnly, controller.connectShopee);
+router.get("/shops", ...adminAuth, shopeeController.getShopeeShops);
 
-router.get("/shops", auth, adminOnly, controller.getShopeeShops);
-
-router.post("/refresh-token", auth, adminOnly, controller.refreshShopeeToken);
+router.post(
+  "/refresh-token",
+  ...adminAuth,
+  shopeeController.refreshShopeeToken,
+);
 
 router.delete(
   "/shops/:shopId",
-  auth,
-  adminOnly,
-  controller.disconnectShopeeShop,
+  ...adminAuth,
+  shopeeController.disconnectShopeeShop,
 );
-
-router.post("/orders/sync", auth, adminOnly, controller.viewShopeeOrders);
 
 // =====================================================
-// QUẢN LÝ KHO SHOPEE
+// ORDER SYNC
 // =====================================================
 
-// Xác nhận xuất kho một sản phẩm trong đơn
 router.post(
-  "/inventory/orders/:orderSn/export",
-  auth,
-  adminOnly,
-  shopeeInventoryController.exportOrderItem,
+  "/orders/sync",
+  ...adminAuth,
+  shopeeOrderController.syncOrdersAsync,
 );
 
-// Nhận và kiểm tra hàng hoàn
-router.post(
-  "/inventory/returns/:returnSn/receive",
-  auth,
-  adminOnly,
-  shopeeInventoryController.receiveReturnItem,
-);
+router.get("/orders", ...adminAuth, shopeeOrderController.getOrdersAsync);
 
-// Lịch sử giao dịch kho Shopee
 router.get(
-  "/inventory/transactions",
-  auth,
-  adminOnly,
-  shopeeInventoryController.getTransactions,
+  "/orders/:orderSn",
+  ...adminAuth,
+  shopeeOrderController.getOrderDetailAsync,
 );
-// QUẢN LÝ SẢN PHẨM SHOPEE
+
+router.get(
+  "/sync/status",
+  ...adminAuth,
+  shopeeOrderController.getSyncStatusAsync,
+);
+
+// =====================================================
+// SKU MAPPING
 // =====================================================
 
-router.post(
-  "/products/sync",
-  auth,
-  adminOnly,
-  shopeeProductController.syncProducts,
+router.get(
+  "/management/sku-mappings",
+  ...adminAuth,
+  shopeeController.getSkuMappingsAsync,
 );
 
-router.get("/products", auth, adminOnly, shopeeProductController.getProducts);
+router.post(
+  "/management/sku-mappings",
+  ...adminAuth,
+  shopeeController.createSkuMappingAsync,
+);
+
+router.put(
+  "/management/sku-mappings/:id",
+  ...adminAuth,
+  shopeeController.updateSkuMappingAsync,
+);
+
+router.delete(
+  "/management/sku-mappings/:id",
+  ...adminAuth,
+  shopeeController.deleteSkuMappingAsync,
+);
+
+router.post(
+  "/management/sku-mappings/auto-match",
+  ...adminAuth,
+  shopeeController.autoMatchSkuMappingsAsync,
+);
+
+// =====================================================
+// STOCK MANAGEMENT
+// =====================================================
+
+// Tổng quan tồn kho Shopee
+router.get(
+  "/stock/summary",
+  ...adminAuth,
+  shopeeStockController.getStockSummaryAsync,
+);
+
+// Danh sách giao dịch tồn kho
+router.get(
+  "/stock/transactions",
+  ...adminAuth,
+  shopeeStockController.getStockTransactionsAsync,
+);
+
+// Danh sách đơn cần xử lý kho
+router.get(
+  "/stock/pending-orders",
+  ...adminAuth,
+  shopeeStockController.getPendingStockOrdersAsync,
+);
+
+// Chi tiết trạng thái kho của đơn
+router.get(
+  "/stock/orders/:orderSn",
+  ...adminAuth,
+  shopeeStockController.getOrderStockDetailAsync,
+);
+
+// Giữ tồn kho cho đơn
+router.post(
+  "/stock/orders/:orderSn/reserve",
+  ...adminAuth,
+  shopeeStockController.reserveOrderStockAsync,
+);
+
+// Xác nhận trừ kho FIFO
+router.post(
+  "/stock/orders/:orderSn/deduct",
+  ...adminAuth,
+  shopeeStockController.deductOrderStockAsync,
+);
+
+// Giải phóng tồn kho khi đơn bị hủy
+router.post(
+  "/stock/orders/:orderSn/release",
+  ...adminAuth,
+  shopeeStockController.releaseOrderStockAsync,
+);
+
+// =====================================================
+// ORDER STOCK OPERATIONS
+// =====================================================
+
+// Xem trước phân bổ FIFO
+router.post(
+  "/orders/:orderSn/stock/preview",
+  ...adminAuth,
+  shopeeStockController.previewStockDeductionAsync,
+);
+
+// Xuất kho theo đơn
+router.post(
+  "/orders/:orderSn/stock/deduct",
+  ...adminAuth,
+  shopeeStockController.deductStockAsync,
+);
+
+// Lịch sử giao dịch kho theo đơn
+router.get(
+  "/orders/:orderSn/stock/history",
+  ...adminAuth,
+  shopeeStockController.getStockHistoryAsync,
+);
+
+// Tiếp nhận hàng hoàn
+router.post(
+  "/orders/:orderSn/returns/receive",
+  ...adminAuth,
+  shopeeStockController.receiveReturnAsync,
+);
+
+// =====================================================
+// AUTO STOCK MANAGEMENT
+// =====================================================
+
+router.get(
+  "/auto-stock/orders",
+  ...adminAuth,
+  shopeeAutoStockController.getAutoStockOrdersAsync,
+);
+
+router.get(
+  "/auto-stock/history",
+  ...adminAuth,
+  shopeeAutoStockController.getAutoStockHistoryAsync,
+);
+
+router.get(
+  "/auto-stock/settings",
+  ...adminAuth,
+  shopeeAutoStockController.getAutoStockSettingsAsync,
+);
+
+router.put(
+  "/auto-stock/settings",
+  ...adminAuth,
+  shopeeAutoStockController.updateAutoStockSettingsAsync,
+);
+
+router.post(
+  "/auto-stock/run",
+  ...adminAuth,
+  shopeeAutoStockController.runAutoStockNowAsync,
+);
+
+router.post(
+  "/auto-stock/process-selected",
+  ...adminAuth,
+  shopeeAutoStockController.processSelectedOrdersAsync,
+);
 module.exports = router;

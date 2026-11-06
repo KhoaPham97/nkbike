@@ -498,6 +498,62 @@ async function callShopeeShopApi({
   }
 }
 
+async function getShopeeOrderDetails(shopId, orderSnList) {
+  if (!Array.isArray(orderSnList) || orderSnList.length === 0) {
+    return [];
+  }
+
+  const path = "/api/v2/order/get_order_detail";
+
+  // Shopee giới hạn tối đa 50 đơn mỗi lần gọi.
+  const chunks = [];
+
+  for (let i = 0; i < orderSnList.length; i += 50) {
+    chunks.push(orderSnList.slice(i, i + 50));
+  }
+
+  const allDetails = [];
+
+  const responseOptionalFields = [
+    "buyer_user_id",
+    "buyer_username",
+    "recipient_address",
+    "item_list",
+    "total_amount",
+    "payment_method",
+    "pay_time",
+    "package_list",
+    "shipping_carrier",
+    "actual_shipping_fee",
+    "estimated_shipping_fee",
+    "buyer_payment_method",
+    "dropshipper",
+    "dropshipper_phone",
+    "note",
+    "note_update_time",
+  ].join(",");
+
+  for (const chunk of chunks) {
+    const data = await callShopeeShopApi({
+      shopId,
+      path,
+      method: "GET",
+      params: {
+        order_sn_list: chunk.join(","),
+        response_optional_fields: responseOptionalFields,
+      },
+    });
+
+    const result = data.response || data;
+
+    const details = result.order_list || [];
+
+    allDetails.push(...details);
+  }
+
+  return allDetails;
+}
+
 // =====================================================
 // 12. LẤY DANH SÁCH ĐƠN HÀNG
 //
@@ -552,30 +608,329 @@ async function getShopeeOrders({
     params.order_status = orderStatus;
   }
 
-  const path = "/api/v2/order/get_order_list";
+  // ==========================================
+  // BƯỚC 1: LẤY DANH SÁCH ĐƠN
+  // ==========================================
 
-  const data = await callShopeeShopApi({
+  const listData = await callShopeeShopApi({
     shopId,
-    path,
+    path: "/api/v2/order/get_order_list",
     method: "GET",
     params,
+  });
+
+  const listResult = listData.response || listData;
+
+  const orderList = listResult.order_list || [];
+
+  // ==========================================
+  // BƯỚC 2: LẤY DANH SÁCH order_sn
+  // ==========================================
+
+  const orderSnList = orderList.map((order) => order.order_sn).filter(Boolean);
+
+  // ==========================================
+  // BƯỚC 3: LẤY CHI TIẾT ĐƠN HÀNG
+  // ==========================================
+
+  let detailList = [];
+
+  if (orderSnList.length > 0) {
+    detailList = await getShopeeOrderDetails(String(shopId), orderSnList);
+  }
+
+  // ==========================================
+  // BƯỚC 4: GHÉP THÔNG TIN ĐƠN HÀNG
+  // ==========================================
+
+  const detailMap = new Map(
+    detailList.map((detail) => [String(detail.order_sn), detail]),
+  );
+
+  const mergedOrders = orderList.map((order) => {
+    const detail = detailMap.get(String(order.order_sn));
+
+    if (!detail) {
+      return order;
+    }
+
+    return {
+      ...order,
+      ...detail,
+    };
+  });
+
+  // ==========================================
+  // BƯỚC 5: TRẢ KẾT QUẢ
+  // ==========================================
+
+  return {
+    requestId: listData.request_id || null,
+
+    orderList: mergedOrders,
+
+    detailCount: detailList.length,
+
+    more: Boolean(listResult.more),
+
+    nextCursor: listResult.next_cursor || "",
+
+    raw: {
+      orderList: listData,
+      orderDetails: detailList,
+    },
+  };
+}
+// =====================================================
+// 13. LẤY DANH SÁCH SẢN PHẨM SHOPEE
+//
+// GET /api/v2/product/get_item_list
+// GET /api/v2/product/get_item_base_info
+// GET /api/v2/product/get_model_list
+//
+// Không ghi dữ liệu vào MongoDB.
+// Không thay đổi tồn kho.
+// =====================================================
+
+/**
+ * Lấy danh sách item_id theo từng trang.
+ */
+async function getShopeeItemIds({
+  shopId,
+  itemStatuses = ["NORMAL"],
+  pageSize = 100,
+  maxPages = 1000,
+}) {
+  if (!shopId) {
+    throw new Error("Thiếu shopId khi lấy sản phẩm Shopee");
+  }
+
+  const statuses = Array.isArray(itemStatuses) ? itemStatuses : [itemStatuses];
+
+  const allItems = new Map();
+
+  for (const status of statuses) {
+    let offset = 0;
+    let page = 0;
+
+    while (page < maxPages) {
+      const data = await callShopeeShopApi({
+        shopId,
+        path: "/api/v2/product/get_item_list",
+        method: "GET",
+        params: {
+          offset,
+          page_size: Math.min(Math.max(Number(pageSize) || 100, 1), 100),
+          item_status: status,
+        },
+      });
+
+      const result = data.response || data;
+      const items = result.item || result.item_list || [];
+
+      for (const item of items) {
+        if (item.item_id) {
+          allItems.set(String(item.item_id), {
+            itemId: String(item.item_id),
+            itemStatus: item.item_status || status,
+            updateTime: item.update_time || null,
+          });
+        }
+      }
+
+      page += 1;
+
+      if (!result.has_next_page) {
+        break;
+      }
+
+      const nextOffset = Number(result.next_offset);
+
+      if (!Number.isFinite(nextOffset) || nextOffset === offset) {
+        throw new Error(
+          `Shopee phân trang sản phẩm không hợp lệ tại offset ${offset}`,
+        );
+      }
+
+      offset = nextOffset;
+    }
+
+    if (page >= maxPages) {
+      throw new Error(
+        `Đã vượt quá giới hạn ${maxPages} trang khi lấy sản phẩm Shopee`,
+      );
+    }
+  }
+
+  return Array.from(allItems.values());
+}
+
+/**
+ * Lấy thông tin cơ bản của nhiều sản phẩm.
+ * Shopee giới hạn tối đa 50 item_id mỗi lần gọi.
+ */
+async function getShopeeItemBaseInfo(shopId, itemIds) {
+  if (!Array.isArray(itemIds) || itemIds.length === 0) {
+    return [];
+  }
+
+  const chunks = [];
+
+  for (let i = 0; i < itemIds.length; i += 50) {
+    chunks.push(itemIds.slice(i, i + 50));
+  }
+
+  const allItems = [];
+
+  for (const chunk of chunks) {
+    const data = await callShopeeShopApi({
+      shopId,
+      path: "/api/v2/product/get_item_base_info",
+      method: "GET",
+      params: {
+        item_id_list: chunk.join(","),
+        response_optional_fields: [
+          "item_sku",
+          "model",
+          "has_model",
+          "description",
+          "condition",
+          "weight",
+          "dimension",
+          "image",
+          "brand",
+        ].join(","),
+      },
+    });
+
+    const result = data.response || data;
+    const items = result.item_list || [];
+
+    allItems.push(...items);
+  }
+
+  return allItems;
+}
+
+/**
+ * Lấy danh sách model/biến thể của một sản phẩm.
+ */
+async function getShopeeItemModels(shopId, itemId) {
+  const data = await callShopeeShopApi({
+    shopId,
+    path: "/api/v2/product/get_model_list",
+    method: "GET",
+    params: {
+      item_id: Number(itemId),
+    },
   });
 
   const result = data.response || data;
 
   return {
-    requestId: data.request_id || null,
-
-    orderList: result.order_list || [],
-
-    more: Boolean(result.more),
-
-    nextCursor: result.next_cursor || "",
-
-    raw: data,
+    tierVariation: result.tier_variation || [],
+    models: (result.model || []).map((model) => ({
+      modelId: String(model.model_id || ""),
+      modelName: model.model_name || "",
+      modelSku: model.model_sku || "",
+      modelStatus: model.model_status || "",
+      tierIndex: model.tier_index || [],
+    })),
   };
 }
 
+/**
+ * Lấy toàn bộ sản phẩm và SKU biến thể của một shop.
+ *
+ * Kết quả chuẩn hóa:
+ * {
+ *   itemId,
+ *   itemName,
+ *   itemSku,
+ *   itemStatus,
+ *   hasModel,
+ *   models: [
+ *     {
+ *       modelId,
+ *       modelName,
+ *       modelSku,
+ *       modelStatus
+ *     }
+ *   ]
+ * }
+ */
+async function getShopeeProducts({
+  shopId,
+  itemStatuses = ["NORMAL"],
+  pageSize = 100,
+  maxPages = 1000,
+  includeModels = true,
+}) {
+  if (!shopId) {
+    throw new Error("Vui lòng chọn shop Shopee.");
+  }
+
+  // Bước 1: Lấy toàn bộ ID sản phẩm.
+  const itemIdList = await getShopeeItemIds({
+    shopId,
+    itemStatuses,
+    pageSize,
+    maxPages,
+  });
+
+  if (itemIdList.length === 0) {
+    return {
+      shopId: String(shopId),
+      total: 0,
+      products: [],
+    };
+  }
+
+  // Bước 2: Lấy thông tin cơ bản.
+  const baseItems = await getShopeeItemBaseInfo(
+    shopId,
+    itemIdList.map((item) => item.itemId),
+  );
+
+  const statusMap = new Map(
+    itemIdList.map((item) => [item.itemId, item.itemStatus]),
+  );
+
+  // Bước 3: Lấy SKU model nếu sản phẩm có phân loại.
+  const products = [];
+
+  for (const item of baseItems) {
+    const itemId = String(item.item_id || "");
+
+    if (!itemId) continue;
+
+    let models = [];
+    let tierVariation = [];
+
+    if (includeModels && item.has_model) {
+      const modelData = await getShopeeItemModels(shopId, itemId);
+
+      models = modelData.models;
+      tierVariation = modelData.tierVariation;
+    }
+
+    products.push({
+      itemId,
+      itemName: item.item_name || "",
+      itemSku: item.item_sku || "",
+      itemStatus: item.item_status || statusMap.get(itemId) || "",
+      hasModel: Boolean(item.has_model),
+      models,
+      tierVariation,
+    });
+  }
+
+  return {
+    shopId: String(shopId),
+    total: products.length,
+    products,
+  };
+}
 // =====================================================
 // 13. EXPORT
 // =====================================================
@@ -586,6 +941,12 @@ module.exports = {
   refreshShopeeAccessToken,
   getShopeeOrders,
 
-  // Có thể dùng lại khi cần gọi API Shopee khác.
+  // Sản phẩm và SKU Shopee
+  getShopeeProducts,
+  getShopeeItemIds,
+  getShopeeItemBaseInfo,
+  getShopeeItemModels,
+
+  // Gọi API Shopee khác
   callShopeeShopApi,
 };

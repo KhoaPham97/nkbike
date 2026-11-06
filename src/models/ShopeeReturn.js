@@ -102,13 +102,13 @@ const shopeeReturnSchema = new mongoose.Schema(
     receivedAt: { type: Date, default: null },
     receivedBy: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
+      ref: "users",
       default: null,
     },
     inspectedAt: { type: Date, default: null },
     inspectedBy: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
+      ref: "users",
       default: null,
     },
 
