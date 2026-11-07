@@ -1275,8 +1275,10 @@ const getBatchReconciliationAsync = async (_req, res) => {
     const rows = [];
 
     for (const product of products) {
-      const variants = getVariants(product).length
-        ? getVariants(product).map((variant) => ({
+      const productVariants = getVariants(product);
+
+      const variants = productVariants.length
+        ? productVariants.map((variant) => ({
             variantName: normalizeVariantName(variant.name),
             variantCode: normalizeVariantCode(variant.variantCode),
             productQty: n(variant.qty),
@@ -1314,18 +1316,32 @@ const getBatchReconciliationAsync = async (_req, res) => {
         ]);
 
         const batchQty = n(batchRows[0]?.batchQty);
+        const difference = row.productQty - batchQty;
 
-        if (batchQty !== row.productQty) {
+        if (difference !== 0) {
           rows.push({
             productId: product._id,
             productTitle: product.title,
             productCode: getCode(product),
+
             variantCode: row.variantCode,
             variantName: row.variantName,
+
+            // Tồn sản phẩm / Variant
             productQty: row.productQty,
+
+            // Tổng tồn các lô
             batchQty,
             batchCount: n(batchRows[0]?.batchCount),
-            difference: row.productQty - batchQty,
+
+            // Product - Batch
+            difference,
+
+            differenceType: difference > 0 ? "product_higher" : "batch_higher",
+
+            // Hỗ trợ frontend điều chỉnh tồn thực tế
+            canAdjustProduct: true,
+            canAdjustBatch: true,
           });
         }
       }
@@ -1334,6 +1350,10 @@ const getBatchReconciliationAsync = async (_req, res) => {
     return res.json({
       success: true,
       totalMismatches: rows.length,
+      summary: {
+        productHigher: rows.filter((row) => row.difference > 0).length,
+        batchHigher: rows.filter((row) => row.difference < 0).length,
+      },
       rows,
     });
   } catch (error) {
@@ -2006,6 +2026,529 @@ const syncBatchUnitCosts = async (req, res) => {
   }
 };
 
+/**
+ * CHỈNH SỬA TỒN KHO CỦA MỘT LÔ
+ *
+ * Body:
+ * {
+ *   remainingQty: 10,
+ *   note: "Kiểm kho thực tế"
+ * }
+ */
+const updateInventoryBatchRemainingAsync = async (req, res) => {
+  const session = await mongoose.startSession();
+
+  try {
+    const { id } = req.params;
+    const { remainingQty, note } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      throw new Error("Mã lô không hợp lệ");
+    }
+
+    const newRemainingQty = Number(remainingQty);
+    const adjustmentNote = clean(note);
+
+    if (!Number.isSafeInteger(newRemainingQty) || newRemainingQty < 0) {
+      throw new Error("Tồn kho mới phải là số nguyên không âm");
+    }
+
+    if (!adjustmentNote) {
+      throw new Error("Vui lòng nhập lý do điều chỉnh tồn kho");
+    }
+
+    let result;
+
+    await session.withTransaction(async () => {
+      const batch = await InventoryBatch.findById(id).session(session);
+
+      if (!batch) {
+        throw new Error("Không tìm thấy lô nhập");
+      }
+
+      if (batch.isActive === false) {
+        throw new Error("Lô đã ngừng hoạt động, không thể chỉnh tồn");
+      }
+
+      const product = await Product.findById(batch.productId).session(session);
+
+      if (!product) {
+        throw new Error("Không tìm thấy sản phẩm của lô");
+      }
+
+      // Xác định đúng Variant bằng variantCode / variantName
+      let identity;
+
+      try {
+        identity = resolveVariantIdentity(
+          product,
+          batch.variantName,
+          batch.variantCode,
+        );
+      } catch (error) {
+        throw new Error(`Không xác định được biến thể: ${error.message}`);
+      }
+
+      const variant = identity.variant;
+
+      const oldBatchQty = n(batch.remainingQty);
+      const delta = newRemainingQty - oldBatchQty;
+
+      const oldProductQty = n(product.qty);
+      const oldVariantQty = variant ? n(variant.qty) : null;
+
+      const newProductQty = oldProductQty + delta;
+      const newVariantQty = variant ? oldVariantQty + delta : null;
+
+      if (newProductQty < 0) {
+        throw new Error("Điều chỉnh khiến tồn sản phẩm bị âm");
+      }
+
+      if (variant) {
+        if (newVariantQty < 0) {
+          throw new Error("Điều chỉnh khiến tồn Variant bị âm");
+        }
+
+        const reservedQty = Math.max(0, n(variant.reservedQty));
+
+        if (newVariantQty < reservedQty) {
+          throw new Error(
+            `Không thể giảm tồn xuống ${newVariantQty}. ` +
+              `Variant đang giữ ${reservedQty} sản phẩm.`,
+          );
+        }
+
+        variant.qty = newVariantQty;
+      }
+
+      // Không thay đổi importQty
+      batch.remainingQty = newRemainingQty;
+      batch.note = [
+        clean(batch.note),
+        `Điều chỉnh tồn: ${oldBatchQty} → ${newRemainingQty}. ${adjustmentNote}`,
+      ]
+        .filter(Boolean)
+        .join(" | ");
+
+      // Đồng bộ tồn Product
+      product.qty = newProductQty;
+      product.updated_at = new Date();
+
+      await batch.save({ session });
+      await product.save({ session });
+
+      // Ghi lịch sử điều chỉnh
+      let history = null;
+
+      if (delta !== 0) {
+        const historyRows = await InventoryHistory.create(
+          [
+            {
+              type: "adjustment",
+              referenceType: "InventoryBatch",
+              referenceId: batch._id,
+              referenceCode: batch.batchCode,
+
+              productId: product._id,
+              productTitle: product.title || "",
+              productCode: getCode(product),
+
+              variantCode: identity.variantCode,
+              variantName: identity.variantName,
+
+              batchId: batch._id,
+              batchCode: batch.batchCode,
+
+              qty: delta,
+              beforeQty: oldProductQty,
+              afterQty: newProductQty,
+
+              unitCost: n(batch.unitCost),
+
+              note: [
+                "Điều chỉnh tồn kho thủ công",
+                `Lô: ${batch.batchCode}`,
+                `Tồn lô: ${oldBatchQty} → ${newRemainingQty}`,
+                adjustmentNote,
+              ].join(" | "),
+
+              createdBy: req.user?._id || null,
+              rollback: false,
+              created_at: new Date(),
+            },
+          ],
+          { session },
+        );
+
+        history = historyRows[0];
+      }
+
+      result = {
+        batch,
+        history,
+        adjustment: {
+          delta,
+          oldBatchQty,
+          newBatchQty: newRemainingQty,
+          oldProductQty,
+          newProductQty,
+          oldVariantQty,
+          newVariantQty,
+        },
+      };
+    });
+
+    return res.json({
+      success: true,
+      message: "Điều chỉnh tồn kho thành công",
+      data: result,
+    });
+  } catch (error) {
+    console.error("updateInventoryBatchRemainingAsync:", error);
+
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Không thể điều chỉnh tồn kho",
+    });
+  } finally {
+    await session.endSession();
+  }
+};
+
+const adjustProductActualStockAsync = async (req, res) => {
+  const session = await mongoose.startSession();
+
+  try {
+    const { productId } = req.params;
+    const { variantCode, actualQty, note } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(productId)) {
+      throw new Error("Mã sản phẩm không hợp lệ");
+    }
+
+    const newQty = Number(actualQty);
+    const adjustmentNote = clean(note);
+
+    if (!Number.isSafeInteger(newQty) || newQty < 0) {
+      throw new Error("Tồn thực tế phải là số nguyên không âm");
+    }
+
+    if (!adjustmentNote) {
+      throw new Error("Vui lòng nhập lý do điều chỉnh");
+    }
+
+    let result;
+
+    await session.withTransaction(async () => {
+      const product = await Product.findById(productId).session(session);
+
+      if (!product) {
+        throw new Error("Không tìm thấy sản phẩm");
+      }
+
+      const variants = Array.isArray(product.variants) ? product.variants : [];
+
+      const hasVariants = variants.length > 0;
+
+      let variant = null;
+      let oldQty = 0;
+      let newProductQty = 0;
+      let historyVariantCode = "";
+      let historyVariantName = "";
+
+      if (hasVariants) {
+        const code = normalizeVariantCode(variantCode);
+
+        if (!code) {
+          throw new Error("Vui lòng chọn Variant cần điều chỉnh");
+        }
+
+        variant = variants.find(
+          (item) => normalizeVariantCode(item.variantCode) === code,
+        );
+
+        if (!variant) {
+          throw new Error("Không tìm thấy Variant");
+        }
+
+        oldQty = n(variant.qty);
+
+        const reservedQty = Math.max(0, n(variant.reservedQty));
+
+        if (newQty < reservedQty) {
+          throw new Error(
+            `Tồn thực tế không được thấp hơn số lượng đang giữ (${reservedQty})`,
+          );
+        }
+
+        variant.qty = newQty;
+
+        newProductQty = variants.reduce(
+          (total, item) => total + n(item.qty),
+          0,
+        );
+
+        historyVariantCode = variant.variantCode || "";
+        historyVariantName = variant.name || "";
+      } else {
+        oldQty = n(product.qty);
+
+        newProductQty = newQty;
+      }
+
+      const delta = newQty - oldQty;
+
+      product.qty = newProductQty;
+      product.updated_at = new Date();
+
+      await product.save({ session });
+
+      let history = null;
+
+      if (delta !== 0) {
+        const historyRows = await InventoryHistory.create(
+          [
+            {
+              type: "adjustment",
+
+              referenceType: "Product",
+              referenceId: product._id,
+              referenceCode: historyVariantCode || getCode(product),
+
+              productId: product._id,
+              productTitle: product.title || "",
+              productCode: getCode(product),
+
+              variantCode: historyVariantCode,
+              variantName: historyVariantName,
+
+              batchId: null,
+              batchCode: "",
+
+              qty: delta,
+              beforeQty: oldQty,
+              afterQty: newQty,
+
+              note: [
+                "Điều chỉnh tồn kho thực tế",
+                `Tồn cũ: ${oldQty}`,
+                `Tồn mới: ${newQty}`,
+                adjustmentNote,
+              ].join(" | "),
+
+              createdBy: req.user?._id || null,
+              rollback: false,
+              created_at: new Date(),
+            },
+          ],
+          { session },
+        );
+
+        history = historyRows[0];
+      }
+
+      result = {
+        productId: product._id,
+        productTitle: product.title,
+        variantCode: historyVariantCode,
+        variantName: historyVariantName,
+
+        oldQty,
+        actualQty: newQty,
+        difference: delta,
+
+        productQty: newProductQty,
+        history,
+      };
+    });
+
+    return res.json({
+      success: true,
+      message: "Điều chỉnh tồn thực tế thành công",
+      data: result,
+    });
+  } catch (error) {
+    console.error("adjustProductActualStockAsync:", error);
+
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Không thể điều chỉnh tồn thực tế",
+    });
+  } finally {
+    await session.endSession();
+  }
+};
+// =====================================================
+// TRỪ TỔNG TỒN LÔ THEO FIFO
+// Chỉ cập nhật InventoryBatch.remainingQty
+// Không cập nhật Product.qty / Variant.qty / importQty
+// =====================================================
+
+const subtractTotalBatchQtyAsync = async (req, res) => {
+  const session = await mongoose.startSession();
+
+  try {
+    const { productId } = req.params;
+    const { variantCode, variantName, qtyToSubtract, note } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(productId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Product ID không hợp lệ",
+      });
+    }
+
+    const subtractQty = Number(qtyToSubtract);
+    const adjustmentNote = clean(note);
+
+    if (!Number.isSafeInteger(subtractQty) || subtractQty <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Số lượng cần trừ phải là số nguyên lớn hơn 0",
+      });
+    }
+
+    if (!adjustmentNote) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng nhập lý do điều chỉnh",
+      });
+    }
+
+    let result = null;
+
+    await session.withTransaction(async () => {
+      const product = await Product.findById(productId).session(session);
+
+      if (!product) {
+        throw new Error("Không tìm thấy sản phẩm");
+      }
+
+      const variants = getVariants(product);
+      let variant = null;
+
+      if (variants.length > 0) {
+        const code = normalizeVariantCode(variantCode);
+        const name = normalizeVariantName(variantName);
+
+        if (!code && !name) {
+          throw new Error("Sản phẩm có phân loại, cần xác định phân loại");
+        }
+
+        variant = findVariant(product, name, code);
+
+        if (!variant) {
+          throw new Error("Không tìm thấy phân loại cần điều chỉnh");
+        }
+      }
+
+      const batchFilter = buildBatchFilter({
+        product,
+        productId: product._id,
+        variant,
+        activeOnly: true,
+      });
+
+      // FIFO: lô nhập cũ nhất được trừ trước
+      const batches = await InventoryBatch.find(batchFilter)
+        .sort({ importDate: 1, createdAt: 1, _id: 1 })
+        .session(session);
+
+      const totalBefore = batches.reduce(
+        (sum, batch) => sum + Math.max(0, n(batch.remainingQty)),
+        0,
+      );
+
+      if (subtractQty > totalBefore) {
+        throw new Error(
+          `Số lượng cần trừ (${subtractQty}) vượt tổng tồn lô (${totalBefore})`,
+        );
+      }
+
+      let remainingToSubtract = subtractQty;
+      const historyRows = [];
+      const affectedBatches = [];
+
+      for (const batch of batches) {
+        if (remainingToSubtract <= 0) break;
+
+        const beforeQty = Math.max(0, n(batch.remainingQty));
+        if (beforeQty <= 0) continue;
+
+        const takeQty = Math.min(beforeQty, remainingToSubtract);
+        const afterQty = beforeQty - takeQty;
+
+        batch.remainingQty = afterQty;
+        await batch.save({ session });
+
+        historyRows.push({
+          type: "adjustment",
+          referenceType: "InventoryBatch",
+          referenceId: batch._id,
+          referenceCode: batch.batchCode || "",
+          productId: product._id,
+          productTitle: product.title || "",
+          productCode: getCode(product) || "",
+          variantCode: variant?.variantCode || "",
+          variantName: variant?.name || "",
+          batchId: batch._id,
+          batchCode: batch.batchCode || "",
+          unitCost: n(batch.unitCost),
+          qty: -takeQty,
+          beforeQty,
+          afterQty,
+          note: adjustmentNote,
+          createdBy: req.user?._id || null,
+          rollback: false,
+        });
+
+        affectedBatches.push({
+          batchId: batch._id,
+          batchCode: batch.batchCode || "",
+          beforeQty,
+          deductedQty: takeQty,
+          afterQty,
+        });
+
+        remainingToSubtract -= takeQty;
+      }
+
+      if (remainingToSubtract > 0) {
+        throw new Error("Không thể phân bổ đủ số lượng cần trừ vào các lô");
+      }
+
+      if (historyRows.length > 0) {
+        await InventoryHistory.create(historyRows, { session });
+      }
+
+      result = {
+        productId: product._id,
+        productTitle: product.title,
+        variantCode: variant?.variantCode || "",
+        variantName: variant?.name || "",
+        totalBefore,
+        deductedQty: subtractQty,
+        totalAfter: totalBefore - subtractQty,
+        affectedBatches,
+      };
+    });
+
+    return res.json({
+      success: true,
+      message: "Đã trừ tổng tồn lô theo FIFO",
+      data: result,
+    });
+  } catch (error) {
+    console.error("subtractTotalBatchQtyAsync:", error);
+
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Không thể trừ tổng tồn lô",
+    });
+  } finally {
+    await session.endSession();
+  }
+};
 // =====================================================
 // EXPORT
 // =====================================================
@@ -2022,4 +2565,8 @@ module.exports = {
   importNewBatchAsync,
   importMultipleBatchesAsync,
   syncBatchUnitCosts,
+  adjustProductActualStockAsync,
+  // Thêm dòng này
+  updateInventoryBatchRemainingAsync,
+  subtractTotalBatchQtyAsync,
 };

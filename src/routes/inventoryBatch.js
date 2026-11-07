@@ -14,6 +14,9 @@ const {
   importNewBatchAsync,
   importMultipleBatchesAsync,
   syncBatchUnitCosts,
+  updateInventoryBatchRemainingAsync,
+  adjustProductActualStockAsync,
+  subtractTotalBatchQtyAsync,
 } = require("../controllers/inventoryBatchController");
 
 router.get("/", auth, adminAuth, listInventoryBatchesAsync);
@@ -47,4 +50,15 @@ router.post(
 router.post("/import", importNewBatchAsync);
 router.post("/import-multiple", auth, adminAuth, importMultipleBatchesAsync);
 router.post("/sync-costs", auth, syncBatchUnitCosts);
+router.patch("/:id/remaining", auth, updateInventoryBatchRemainingAsync);
+router.patch(
+  "products/:productId/adjust-actual-stock",
+  auth,
+  adjustProductActualStockAsync,
+);
+router.patch(
+  "/products/:productId/subtract-total-batch-qty",
+  auth,
+  subtractTotalBatchQtyAsync,
+);
 module.exports = router;
