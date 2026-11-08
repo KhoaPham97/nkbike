@@ -7,6 +7,7 @@ const shopeeController = require("../controllers/shopeeController");
 const shopeeOrderController = require("../controllers/shopeeOrderController");
 const shopeeStockController = require("../controllers/shopeeStockController");
 const shopeeAutoStockController = require("../controllers/shopeeAutoStockController");
+const shopeeRevenueController = require("../controllers/shopeeRevenueController");
 const adminAuth = [auth, adminOnly];
 
 // =====================================================
@@ -212,5 +213,26 @@ router.post(
   "/auto-stock/process-selected",
   ...adminAuth,
   shopeeAutoStockController.processSelectedOrdersAsync,
+);
+// =====================================================
+// REVENUE / FINANCE
+// =====================================================
+
+router.get(
+  "/revenue/overview",
+  ...adminAuth,
+  shopeeRevenueController.getRevenueOverviewAsync,
+);
+
+router.get(
+  "/revenue/report",
+  ...adminAuth,
+  shopeeRevenueController.getRevenueReportAsync,
+);
+
+router.get(
+  "/revenue/orders",
+  ...adminAuth,
+  shopeeRevenueController.getRevenueOrdersAsync,
 );
 module.exports = router;

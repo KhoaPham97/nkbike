@@ -294,15 +294,6 @@ async function refreshShopeeAccessToken(shopId) {
 
   const client = getHttpClient();
 
-  console.log("SHOPEE REFRESH REQUEST:", {
-    host: config.baseUrl,
-    path,
-    partnerId: config.partnerId,
-    shopId: normalizedShopId,
-    hasRefreshToken: Boolean(shop.refreshToken),
-    hasSign: Boolean(sign),
-  });
-
   const response = await client.post(
     path,
     {
@@ -920,7 +911,145 @@ async function getShopeeProducts({
     products,
   };
 }
+// =====================================================
+// 14. SHOPEE FINANCE / REVENUE
+// =====================================================
 
+// Tổng quan tiền chờ và tiền đã quyết toán.
+// Đây là snapshot tại thời điểm gọi, không phải báo cáo lịch sử.
+async function getShopeeIncomeOverview(shopId, incomeStatus) {
+  const params = {};
+
+  if (incomeStatus !== undefined && incomeStatus !== null) {
+    params.income_status = Number(incomeStatus);
+  }
+
+  const data = await callShopeeShopApi({
+    shopId,
+    path: "/api/v2/payment/get_income_overview",
+    method: "GET",
+    params,
+  });
+
+  return data.response || data;
+}
+
+// Chi tiết doanh thu theo trạng thái.
+// Local shop: 1 = Released, 2 = Pending.
+// Released yêu cầu date_from/date_to và tối đa 14 ngày.
+async function getShopeeIncomeDetail(
+  shopId,
+  { incomeStatus, dateFrom, dateTo, pageSize = 100, cursor = "" } = {},
+) {
+  const status = Number(incomeStatus);
+
+  if (![0, 1, 2].includes(status)) {
+    throw new Error("incomeStatus phải là 0, 1 hoặc 2.");
+  }
+
+  const size = Math.min(Math.max(Number(pageSize) || 100, 1), 100);
+
+  const params = {
+    income_status: status,
+    page_size: size,
+    cursor: String(cursor || ""),
+  };
+
+  if (status === 1) {
+    if (!dateFrom || !dateTo) {
+      throw new Error("Released cần dateFrom và dateTo.");
+    }
+
+    const from = new Date(`${dateFrom}T00:00:00Z`);
+    const to = new Date(`${dateTo}T00:00:00Z`);
+
+    if (
+      Number.isNaN(from.getTime()) ||
+      Number.isNaN(to.getTime()) ||
+      from >= to
+    ) {
+      throw new Error("Khoảng ngày quyết toán không hợp lệ.");
+    }
+
+    const days = (to.getTime() - from.getTime()) / 86400000;
+
+    if (days > 13) {
+      throw new Error("Mỗi lần lấy Released chỉ được tối đa 14 ngày.");
+    }
+
+    params.date_from = dateFrom;
+    params.date_to = dateTo;
+  }
+
+  // Pending: không truyền ngày, Shopee trả các khoản đang chờ hiện tại.
+  const data = await callShopeeShopApi({
+    shopId,
+    path: "/api/v2/payment/get_income_detail",
+    method: "GET",
+    params,
+  });
+
+  return data.response || data;
+}
+
+// Chi tiết hạch toán của một đơn.
+async function getShopeeEscrowDetail(shopId, orderSn) {
+  if (!orderSn) {
+    throw new Error("Thiếu orderSn khi lấy escrow detail.");
+  }
+
+  const data = await callShopeeShopApi({
+    shopId,
+    path: "/api/v2/payment/get_escrow_detail",
+    method: "GET",
+    params: {
+      order_sn: String(orderSn),
+    },
+  });
+
+  return data.response || data;
+}
+
+// Tên hàm Batch để tương thích export hiện tại.
+// Dùng endpoint chi tiết từng đơn; giới hạn đồng thời để tránh gọi dồn.
+async function getShopeeEscrowDetailBatch(shopId, orderSnList = []) {
+  const uniqueOrderSns = [
+    ...new Set(
+      orderSnList.map((value) => String(value || "").trim()).filter(Boolean),
+    ),
+  ];
+
+  const results = [];
+  const concurrency = 3;
+
+  for (let i = 0; i < uniqueOrderSns.length; i += concurrency) {
+    const chunk = uniqueOrderSns.slice(i, i + concurrency);
+
+    const chunkResults = await Promise.all(
+      chunk.map(async (orderSn) => {
+        try {
+          const detail = await getShopeeEscrowDetail(shopId, orderSn);
+
+          return {
+            orderSn,
+            success: true,
+            data: detail,
+          };
+        } catch (error) {
+          return {
+            orderSn,
+            success: false,
+            error: error.message || String(error),
+          };
+        }
+      }),
+    );
+
+    results.push(...chunkResults);
+  }
+
+  return results;
+}
 // =====================================================
 // 13. EXPORT
 // =====================================================
@@ -936,6 +1065,11 @@ module.exports = {
   getShopeeItemIds,
   getShopeeItemBaseInfo,
   getShopeeItemModels,
+  // Shopee Finance / Revenue
+  getShopeeIncomeOverview,
+  getShopeeIncomeDetail,
+  getShopeeEscrowDetail,
+  getShopeeEscrowDetailBatch,
 
   // Gọi API Shopee khác
   callShopeeShopApi,

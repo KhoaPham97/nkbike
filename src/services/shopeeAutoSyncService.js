@@ -17,7 +17,7 @@ const { getShopeeOrders } = require("./shopeeService");
 
 const PAGE_SIZE = 50;
 const MAX_PAGES = 100;
-const LOOKBACK_DAYS = 7;
+const LOOKBACK_DAYS = 15;
 
 // =====================================================
 // COMMON HELPERS

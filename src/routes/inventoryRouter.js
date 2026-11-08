@@ -4,6 +4,11 @@ const router = express.Router();
 
 const { auth } = require("../middlewares/auth");
 const adminAuth = require("../middlewares/adminAuth");
+const {
+  getReservations,
+  getReservationDetail,
+  getReservationOrderDetail,
+} = require("../controllers/inventoryReservationController");
 
 const inventoryController = require("../controllers/inventoryController");
 
@@ -72,10 +77,12 @@ router.get("/receipts/:id", inventoryController.getInventoryReceiptDetailAsync);
 
 // Đồng bộ giá vốn
 router.post("/sync-zero-costs", inventoryController.syncZeroCost);
-router.get(
-  "/:id",
-  auth,
-  adminAuth,
-  inventoryController.getInventoryReceiptDetailAsync,
-);
+// Theo dõi sản phẩm đang được đơn hàng giữ
+router.get("/reservations", auth, getReservations);
+
+// Chi tiết giữ hàng của một sản phẩm
+router.get("/reservations/:productId", auth, getReservationDetail);
+router.get("/reservations/order/:source/:orderId", getReservationOrderDetail);
+
+router.get("/:id", auth, inventoryController.getInventoryReceiptDetailAsync);
 module.exports = router;

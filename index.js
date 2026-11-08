@@ -9,6 +9,9 @@ const { startShopeeAutoStockJob } = require("./src/jobs/shopeeAutoStockJob");
 const chatRoutes = require("./src/routes/chatRoute");
 const setupChatSocket = require("./src/socket/chatSocket");
 const setupStockNotificationSocket = require("./src/socket/stockNotificationSocket");
+const setupShopeeOrderSocket = require("./src/socket/shopeeOrderSocket");
+const { startShopeeOrderSyncJob } = require("./src/jobs/shopeeOrderSyncJob");
+
 // ==============================
 // ENV CHECK
 // ==============================
@@ -84,6 +87,7 @@ setupChatSocket(io);
 
 // Socket thông báo tồn kho
 setupStockNotificationSocket(io);
+setupShopeeOrderSocket(io);
 // ==============================
 // FRONTEND PRODUCTION
 // ==============================
@@ -101,17 +105,24 @@ app.get("/", (req, res) => {
 // ==============================
 
 const PORT = process.env.PORT || 3001;
-
 server.listen(PORT, async () => {
   console.log(
     `Server has started successfully in ${process.env.NODE_ENV} mode at port ${PORT}`,
   );
-  // Khởi động Cron Job Shopee.
 
+  // Khởi động Auto Stock độc lập.
   try {
     await startShopeeAutoStockJob();
     console.log("[Shopee Auto Stock] Khởi tạo thành công.");
   } catch (error) {
-    console.error("[Shopee Auto Stock] Không thể khởi tạo Job:", error);
+    console.error("[Shopee Auto Stock] Không thể khởi tạo:", error);
+  }
+
+  // Khởi động đồng bộ đơn hàng Shopee độc lập.
+  try {
+    startShopeeOrderSyncJob(io);
+    console.log("[Shopee Order Sync] Khởi tạo thành công.");
+  } catch (error) {
+    console.error("[Shopee Order Sync] Không thể khởi tạo:", error);
   }
 });
