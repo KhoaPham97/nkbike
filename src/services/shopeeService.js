@@ -637,6 +637,11 @@ async function getShopeeOrders({
     return {
       ...order,
       ...detail,
+      // Giữ timestamp gốc từ API danh sách đơn.
+      create_time: order.create_time ?? detail.create_time,
+
+      // Ưu tiên thời gian cập nhật mới nhất từ API chi tiết.
+      update_time: detail.update_time ?? order.update_time,
     };
   });
 
