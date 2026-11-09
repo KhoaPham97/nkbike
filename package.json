@@ -1,37 +1,37 @@
 {
-    "name": "back-end",
-    "version": "1.0.0",
-    "description": "Online shop",
-    "main": "index.js",
-    "scripts": {
-        "start": "node index.js",
-        "test": "echo \"Error: no test specified\" && exit 1"
-    },
-    "author": "Steve Tamang",
-    "license": "ISC",
-    "dependencies": {
-        "axios": "^1.20.0",
-        "bcrypt": "^6.0.0",
-        "bcryptjs": "^2.4.3",
-        "body-parser": "^1.19.0",
-        "cloudinary": "^2.11.0",
-        "cors": "^2.8.5",
-        "dotenv": "^10.0.0",
-        "express": "^4.17.1",
-        "follow-redirects": ">=1.14.8",
-        "https": "^1.0.0",
-        "jsonwebtoken": "^9.0.3",
-        "mongoose": "^8.16.4",
-        "morgan": "^1.10.0",
-        "mpath": "^0.8.4",
-        "multer": "^2.4.0",
-        "node-cron": "^4.6.0",
-        "nodemon": "^2.0.12",
-        "openai": "^7.23.0",
-        "socket.io": "^4.8.4",
-        "stripe": "^8.170.0"
-    },
-    "allowScripts": {
-        "bcrypt@5.0.1": true
-    }
+  "name": "back-end",
+  "version": "1.0.0",
+  "description": "NHAT KHANG BIKE",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "KHOA DANG PHAM",
+  "license": "NKB",
+  "dependencies": {
+    "axios": "^1.20.0",
+    "bcrypt": "^6.0.0",
+    "bcryptjs": "^2.4.3",
+    "body-parser": "^1.19.0",
+    "cloudinary": "^2.11.0",
+    "cors": "^2.8.5",
+    "dotenv": "^10.0.0",
+    "express": "^4.17.1",
+    "follow-redirects": ">=1.14.8",
+    "https": "^1.0.0",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^8.16.4",
+    "morgan": "^1.10.0",
+    "mpath": "^0.8.4",
+    "multer": "^2.4.0",
+    "node-cron": "^4.6.0",
+    "nodemon": "^2.0.12",
+    "openai": "^7.23.0",
+    "socket.io": "^4.8.4",
+    "stripe": "^8.170.0"
+  },
+  "allowScripts": {
+    "bcrypt@5.0.1": true
+  }
 }
