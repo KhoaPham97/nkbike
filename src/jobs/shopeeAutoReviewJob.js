@@ -528,7 +528,17 @@ async function processShop(shop, setting, stats, budget, token) {
   const itemResult = await withTimeout(
     getShopeeItemIds({
       shopId,
-      itemStatuses: ["NORMAL"],
+      itemStatuses: ["NORMAL",
+
+      "UNLIST",
+
+      "BANNED",
+
+      "REVIEWING",
+
+      "SELLER_DELETE",
+
+      "SHOPEE_DELETE"],
       pageSize: 100,
     }),
     `Lấy danh sách sản phẩm shop ${shopId}`,
