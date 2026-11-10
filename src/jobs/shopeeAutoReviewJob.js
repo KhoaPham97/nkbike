@@ -17,13 +17,16 @@ const {
 // CONFIG
 // =====================================================
 
+const LOCK_TIMEOUT_MINUTES = 10;
+const HEARTBEAT_INTERVAL_MS = 60 * 1000;
+
+const REQUEST_TIMEOUT_MS = 90 * 1000;
 const PROCESSING_TIMEOUT_MINUTES = 30;
-const LOCK_TIMEOUT_MINUTES = 120;
+
 const REQUEST_DELAY_MS = 300;
 
 let cronTask = null;
 let ioInstance = null;
-let isRunning = false;
 
 // =====================================================
 // HELPERS
@@ -31,6 +34,34 @@ let isRunning = false;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+class LockLostError extends Error {
+  constructor() {
+    super("Cron đã mất quyền sở hữu lock. Dừng lượt chạy hiện tại.");
+    this.name = "LockLostError";
+  }
+}
+
+class RequestTimeoutError extends Error {
+  constructor(name) {
+    super(`${name} vượt quá thời gian chờ ${REQUEST_TIMEOUT_MS / 1000} giây.`);
+    this.name = "RequestTimeoutError";
+    this.isTimeout = true;
+  }
+}
+
+function withTimeout(promise, name = "Shopee API") {
+  let timer;
+
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new RequestTimeoutError(name));
+      }, REQUEST_TIMEOUT_MS);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 function emitReview(event, data = {}) {
@@ -69,10 +100,6 @@ function getShopName(shop) {
   return shop.shopName || shop.shop_name || shop.name || String(shop.shopId);
 }
 
-// getShopeeItemIds có thể trả về:
-// [{ itemId: "123" }]
-// hoặc ["123"]
-
 function getItemIdsResult(result) {
   let items = [];
 
@@ -86,13 +113,10 @@ function getItemIdsResult(result) {
 
   const ids = items
     .map((item) => {
-      let value;
-
-      if (typeof item === "object" && item !== null) {
-        value = item.itemId ?? item.item_id ?? item.itemID;
-      } else {
-        value = item;
-      }
+      const value =
+        typeof item === "object" && item !== null
+          ? (item.itemId ?? item.item_id ?? item.itemID)
+          : item;
 
       const id = String(value ?? "").trim();
 
@@ -150,16 +174,19 @@ async function getSetting() {
       $setOnInsert: {
         enabled: process.env.SHOPEE_AUTO_REVIEW_ENABLED === "true",
 
-        intervalMinutes: Number(
-          process.env.SHOPEE_AUTO_REVIEW_INTERVAL_MINUTES || 1,
+        intervalMinutes: Math.max(
+          1,
+          Number(process.env.SHOPEE_AUTO_REVIEW_INTERVAL_MINUTES || 2),
         ),
 
-        maxRepliesPerRun: Number(
-          process.env.SHOPEE_AUTO_REVIEW_MAX_PER_RUN || 10,
+        maxRepliesPerRun: Math.max(
+          1,
+          Number(process.env.SHOPEE_AUTO_REVIEW_MAX_PER_RUN || 10),
         ),
 
-        delayBetweenRepliesMs: Number(
-          process.env.SHOPEE_AUTO_REVIEW_DELAY_MS || 3000,
+        delayBetweenRepliesMs: Math.max(
+          0,
+          Number(process.env.SHOPEE_AUTO_REVIEW_DELAY_MS || 3000),
         ),
       },
     },
@@ -213,6 +240,128 @@ async function getTemplate(rating, shopId) {
   }
 
   return template;
+}
+
+// =====================================================
+// DISTRIBUTED LOCK
+// =====================================================
+
+async function acquireLock() {
+  const now = new Date();
+
+  const expiredAt = new Date(now.getTime() - LOCK_TIMEOUT_MINUTES * 60 * 1000);
+
+  const token = crypto.randomUUID();
+
+  const result = await ShopeeAutoReviewSetting.findOneAndUpdate(
+    {
+      _id: "global",
+
+      $or: [
+        { lockToken: "" },
+        { lockToken: { $exists: false } },
+        { lockedAt: null },
+        { lockedAt: { $lt: expiredAt } },
+      ],
+    },
+    {
+      $set: {
+        lockToken: token,
+        lockedAt: now,
+        isRunning: true,
+        lastStatus: "running",
+        lastStartedAt: now,
+        lastError: "",
+      },
+    },
+    { new: true },
+  );
+
+  if (!result) return null;
+
+  console.log("[SHOPEE CRON] Lock acquired:", token);
+
+  return token;
+}
+
+async function renewLock(token) {
+  const result = await ShopeeAutoReviewSetting.updateOne(
+    {
+      _id: "global",
+      lockToken: token,
+    },
+    {
+      $set: {
+        lockedAt: new Date(),
+        isRunning: true,
+      },
+    },
+  );
+
+  return result.matchedCount > 0;
+}
+
+async function assertLock(token) {
+  const setting = await ShopeeAutoReviewSetting.findOne({
+    _id: "global",
+    lockToken: token,
+  })
+    .select("enabled lockToken")
+    .lean();
+
+  if (!setting || setting.lockToken !== token) {
+    throw new LockLostError();
+  }
+
+  if (!setting.enabled) {
+    throw new Error("Tự động trả lời Shopee đã bị tắt.");
+  }
+}
+
+function startHeartbeat(token) {
+  const heartbeat = setInterval(async () => {
+    try {
+      const renewed = await renewLock(token);
+
+      if (!renewed) {
+        console.error("[SHOPEE CRON] Không thể gia hạn lock:", token);
+      } else {
+        console.log("[SHOPEE CRON] Lock renewed:", token);
+      }
+    } catch (error) {
+      console.error("[SHOPEE CRON] Heartbeat failed:", error.message);
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+
+  heartbeat.unref?.();
+
+  return heartbeat;
+}
+
+async function releaseLock(token, status, error, stats) {
+  const result = await ShopeeAutoReviewSetting.updateOne(
+    {
+      _id: "global",
+      lockToken: token,
+    },
+    {
+      $set: {
+        lockToken: "",
+        lockedAt: null,
+        isRunning: false,
+        lastStatus: status,
+        lastFinishedAt: new Date(),
+        lastError: error || "",
+        lastStats: stats,
+      },
+    },
+  );
+
+  if (result.matchedCount) {
+    console.log("[SHOPEE CRON] Lock released:", token);
+  } else {
+    console.warn("[SHOPEE CRON] Lock đã thuộc về tiến trình khác:", token);
+  }
 }
 
 // =====================================================
@@ -274,17 +423,10 @@ async function claimReview(shopId, review) {
       },
     );
   } catch (error) {
-    if (error.code === 11000) {
-      return null;
-    }
-
+    if (error.code === 11000) return null;
     throw error;
   }
 }
-
-// =====================================================
-// MARK FAILED
-// =====================================================
 
 async function markFailed(log, error) {
   if (!log) return;
@@ -297,12 +439,10 @@ async function markFailed(log, error) {
     {
       $set: {
         status: "failed",
-
         errorMessage: String(error?.message || error || "Không xác định").slice(
           0,
           2000,
         ),
-
         processingAt: null,
       },
     },
@@ -311,33 +451,34 @@ async function markFailed(log, error) {
 
 // =====================================================
 // GET LATEST REVIEWS
-//
-// Chỉ lấy trang mới nhất của từng sản phẩm.
-// Không quét toàn bộ lịch sử.
 // =====================================================
 
-async function getLatestReviews(shopId, itemIds, stats) {
+async function getLatestReviews(shopId, itemIds, stats, token) {
   const reviewMap = new Map();
 
   let completedItems = 0;
 
   for (const itemId of itemIds) {
+    await assertLock(token);
+
     try {
-      const result = await getShopeeReviews({
-        shopId,
-        itemId,
-        pageSize: 100,
-      });
+      const result = await withTimeout(
+        getShopeeReviews({
+          shopId,
+          itemId,
+          pageSize: 100,
+        }),
+        `Lấy đánh giá sản phẩm ${itemId}`,
+      );
 
       const reviews = result?.reviews || [];
 
       for (const review of reviews) {
         const commentId = getCommentId(review);
 
-        if (!commentId) continue;
-
-        // Chống trùng đánh giá giữa các lần lấy dữ liệu.
-        reviewMap.set(commentId, review);
+        if (commentId) {
+          reviewMap.set(commentId, review);
+        }
       }
 
       completedItems++;
@@ -350,14 +491,14 @@ async function getLatestReviews(shopId, itemIds, stats) {
         loaded: reviewMap.size,
       });
     } catch (error) {
+      if (error instanceof LockLostError) throw error;
+
       stats.scanFailed++;
 
-      console.error("[Shopee Auto Review] Scan item failed:", {
+      console.error("[SHOPEE] Scan item failed:", {
         shopId,
         itemId,
         message: error.message,
-        code: error.code || null,
-        status: error.response?.status || null,
       });
 
       emitReview("auto:scan-failed", {
@@ -381,19 +522,24 @@ async function getLatestReviews(shopId, itemIds, stats) {
 // PROCESS ONE SHOP
 // =====================================================
 
-async function processShop(shop, setting, stats, budget) {
+async function processShop(shop, setting, stats, budget, token) {
   const shopId = String(shop.shopId);
+
+  await assertLock(token);
 
   emitReview("auto:shop-started", {
     shopId,
     shopName: getShopName(shop),
   });
 
-  const itemResult = await getShopeeItemIds({
-    shopId,
-    itemStatuses: ["NORMAL"],
-    pageSize: 100,
-  });
+  const itemResult = await withTimeout(
+    getShopeeItemIds({
+      shopId,
+      itemStatuses: ["NORMAL"],
+      pageSize: 100,
+    }),
+    `Lấy danh sách sản phẩm shop ${shopId}`,
+  );
 
   const itemIds = getItemIdsResult(itemResult);
 
@@ -407,12 +553,11 @@ async function processShop(shop, setting, stats, budget) {
     return;
   }
 
-  console.log(
-    `[Shopee Auto Review] Shop ${shopId}: quét ${itemIds.length} sản phẩm.`,
-  );
+  console.log(`[SHOPEE] Shop ${shopId}: quét ${itemIds.length} sản phẩm.`);
 
-  // Chỉ lấy trang đánh giá mới nhất của từng sản phẩm.
-  const reviews = await getLatestReviews(shopId, itemIds, stats);
+  const reviews = await getLatestReviews(shopId, itemIds, stats, token);
+
+  await assertLock(token);
 
   const unanswered = reviews
     .filter(isUnanswered)
@@ -420,15 +565,14 @@ async function processShop(shop, setting, stats, budget) {
 
   stats.total += unanswered.length;
 
-  // Ưu tiên xử lý đánh giá cũ trước.
   unanswered.sort((a, b) => getReviewTime(a) - getReviewTime(b));
 
   let processed = 0;
 
   for (const review of unanswered) {
-    // Giới hạn tổng số phản hồi trong một lần cron,
-    // không nhân số lượng theo số gian hàng.
     if (budget.remaining <= 0) break;
+
+    await assertLock(token);
 
     const commentId = getCommentId(review);
 
@@ -461,6 +605,8 @@ async function processShop(shop, setting, stats, budget) {
         throw new Error("Nội dung phản hồi vượt quá 500 ký tự.");
       }
 
+      await assertLock(token);
+
       await ShopeeReviewReplyLog.updateOne(
         { _id: claim._id },
         {
@@ -471,11 +617,53 @@ async function processShop(shop, setting, stats, budget) {
         },
       );
 
-      await sendShopeeReviewReply({
-        shopId,
-        commentId,
-        comment: replyContent,
-      });
+      await assertLock(token);
+
+      try {
+        await withTimeout(
+          sendShopeeReviewReply({
+            shopId,
+            commentId,
+            comment: replyContent,
+          }),
+          `Gửi phản hồi ${commentId}`,
+        );
+      } catch (sendError) {
+        // Timeout khi gửi có thể là Shopee đã nhận
+        // nhưng phản hồi HTTP chưa về.
+        // Không đánh dấu failed ngay để tránh gửi trùng.
+        if (sendError.isTimeout) {
+          await ShopeeReviewReplyLog.updateOne(
+            {
+              _id: claim._id,
+              status: "processing",
+            },
+            {
+              $set: {
+                errorMessage:
+                  "Gửi phản hồi bị timeout. Chưa xác định Shopee đã nhận hay chưa. Sẽ kiểm tra lại sau.",
+              },
+            },
+          );
+
+          stats.failed++;
+
+          emitReview("auto:reply-failed", {
+            shopId,
+            commentId,
+            error: sendError.message,
+          });
+
+          console.error(
+            "[SHOPEE] Send timeout, giữ processing để tránh gửi trùng:",
+            commentId,
+          );
+
+          continue;
+        }
+
+        throw sendError;
+      }
 
       await ShopeeReviewReplyLog.updateOne(
         {
@@ -506,15 +694,15 @@ async function processShop(shop, setting, stats, budget) {
         stats,
       });
 
-      console.log(
-        `[Shopee Auto Review] Đã trả lời: shop=${shopId}, comment=${commentId}`,
-      );
+      console.log(`[SHOPEE] Đã trả lời shop=${shopId}, comment=${commentId}`);
     } catch (error) {
+      if (error instanceof LockLostError) throw error;
+
       stats.failed++;
 
       await markFailed(claim, error);
 
-      console.error("[Shopee Auto Review] Reply failed:", {
+      console.error("[SHOPEE] Reply failed:", {
         shopId,
         commentId,
         message: error.message,
@@ -547,83 +735,24 @@ async function processShop(shop, setting, stats, budget) {
 }
 
 // =====================================================
-// DISTRIBUTED LOCK
-// =====================================================
-
-async function acquireLock() {
-  const now = new Date();
-
-  const expiredAt = new Date(now.getTime() - LOCK_TIMEOUT_MINUTES * 60 * 1000);
-
-  const token = crypto.randomUUID();
-
-  const setting = await ShopeeAutoReviewSetting.findOneAndUpdate(
-    {
-      _id: "global",
-
-      $or: [
-        { lockToken: "" },
-        { lockToken: { $exists: false } },
-        { lockedAt: null },
-        { lockedAt: { $lt: expiredAt } },
-      ],
-    },
-    {
-      $set: {
-        lockToken: token,
-        lockedAt: now,
-        isRunning: true,
-        lastStatus: "running",
-        lastStartedAt: now,
-        lastError: "",
-      },
-    },
-    { new: true },
-  );
-
-  return setting ? token : null;
-}
-
-async function releaseLock(token, status, error, stats) {
-  await ShopeeAutoReviewSetting.updateOne(
-    {
-      _id: "global",
-      lockToken: token,
-    },
-    {
-      $set: {
-        lockToken: "",
-        lockedAt: null,
-        isRunning: false,
-        lastStatus: status,
-        lastFinishedAt: new Date(),
-        lastError: error || "",
-        lastStats: stats,
-      },
-    },
-  );
-}
-
-// =====================================================
 // MAIN JOB
 // =====================================================
 
-async function runShopeeAutoReview(options = {}) {
-  if (isRunning) return;
-
+async function executeShopeeAutoReview(options = {}) {
   const setting = await getSetting();
 
-  if (!setting.enabled) return;
+  if (!setting.enabled) {
+    console.log("[SHOPEE CRON] Đang tắt.");
+    return;
+  }
 
-  // Cron chạy mỗi phút nhưng chỉ thực thi đúng interval.
-  // Chạy thủ công không bị giới hạn bởi interval.
   if (options.respectInterval) {
     const lastStartedAt = setting.lastStartedAt
       ? new Date(setting.lastStartedAt).getTime()
       : 0;
 
     const intervalMs =
-      Math.max(1, Number(setting.intervalMinutes) || 1) * 60 * 1000;
+      Math.max(1, Number(setting.intervalMinutes) || 2) * 60 * 1000;
 
     if (lastStartedAt && Date.now() - lastStartedAt < intervalMs) {
       return;
@@ -632,9 +761,12 @@ async function runShopeeAutoReview(options = {}) {
 
   const token = await acquireLock();
 
-  if (!token) return;
+  if (!token) {
+    console.log("[SHOPEE CRON] Bỏ qua: một tiến trình khác đang giữ lock.");
+    return;
+  }
 
-  isRunning = true;
+  const heartbeat = startHeartbeat(token);
 
   const stats = {
     total: 0,
@@ -649,6 +781,13 @@ async function runShopeeAutoReview(options = {}) {
   };
 
   let runError = "";
+  let finalStatus = "completed";
+
+  console.log("[SHOPEE CRON] START:", {
+    token,
+    intervalMinutes: setting.intervalMinutes,
+    maxRepliesPerRun: budget.remaining,
+  });
 
   emitReview("auto:started", {
     settings: {
@@ -661,50 +800,74 @@ async function runShopeeAutoReview(options = {}) {
   try {
     const shops = await getConnectedShops();
 
+    console.log(`[SHOPEE CRON] Có ${shops.length} shop được kết nối.`);
+
     for (const shop of shops) {
+      await assertLock(token);
+
       if (budget.remaining <= 0) break;
 
-      const latestSetting =
-        await ShopeeAutoReviewSetting.findById("global").lean();
+      const latestSetting = await ShopeeAutoReviewSetting.findById("global")
+        .select("enabled")
+        .lean();
 
       if (!latestSetting?.enabled) break;
 
-      await processShop(shop, setting, stats, budget);
+      await processShop(shop, setting, stats, budget, token);
     }
+
+    await assertLock(token);
 
     emitReview("auto:completed", {
       stats,
       remaining: budget.remaining,
     });
 
-    console.log("[Shopee Auto Review] Completed:", stats);
+    console.log("[SHOPEE CRON] COMPLETED:", stats);
   } catch (error) {
     runError = error.message || "Lỗi tự động trả lời";
 
-    console.error("[Shopee Auto Review] Job failed:", error);
+    finalStatus = "failed";
+
+    console.error("[SHOPEE CRON] JOB FAILED:", error);
 
     emitReview("auto:error", {
       error: runError,
     });
   } finally {
+    clearInterval(heartbeat);
+
     try {
-      await releaseLock(
-        token,
-        runError ? "failed" : "completed",
-        runError,
-        stats,
-      );
-    } finally {
-      isRunning = false;
+      await releaseLock(token, finalStatus, runError, stats);
+    } catch (error) {
+      console.error("[SHOPEE CRON] Release lock failed:", error.message);
     }
+
+    console.log("[SHOPEE CRON] FINISHED:", {
+      status: finalStatus,
+      stats,
+    });
   }
 }
 
 // =====================================================
-// CRON
+// PUBLIC RUN
 //
-// Kiểm tra mỗi phút.
-// runShopeeAutoReview tự kiểm tra intervalMinutes.
+// Không dùng isRunning làm khóa chính.
+// MongoDB atomic lock kiểm soát tất cả instance.
+// =====================================================
+
+async function runShopeeAutoReview(options = {}) {
+  try {
+    return await executeShopeeAutoReview(options);
+  } catch (error) {
+    console.error("[SHOPEE CRON] Unexpected error:", error);
+    throw error;
+  }
+}
+
+// =====================================================
+// SCHEDULE
 // =====================================================
 
 async function scheduleShopeeAutoReview() {
@@ -716,17 +879,19 @@ async function scheduleShopeeAutoReview() {
   }
 
   if (!setting.enabled) {
-    console.log("[Shopee Auto Review] Đang tắt.");
+    console.log("[SHOPEE CRON] Đang tắt.");
     return setting;
   }
 
   cronTask = cron.schedule(
     "* * * * *",
     () => {
+      console.log("[SHOPEE CRON] Tick:", new Date().toISOString());
+
       runShopeeAutoReview({
         respectInterval: true,
       }).catch((error) => {
-        console.error("[Shopee Auto Review Cron]", error);
+        console.error("[SHOPEE CRON] Tick error:", error);
       });
     },
     {
@@ -735,7 +900,7 @@ async function scheduleShopeeAutoReview() {
   );
 
   console.log(
-    `[Shopee Auto Review] Cron initialized. Interval: ${setting.intervalMinutes} minute(s).`,
+    `[SHOPEE CRON] Initialized. Interval: ${setting.intervalMinutes} minute(s).`,
   );
 
   return setting;
@@ -750,7 +915,7 @@ async function startShopeeAutoReviewJob(io) {
 
   await scheduleShopeeAutoReview();
 
-  console.log("[Shopee Auto Review] Cron initialized.");
+  console.log("[SHOPEE CRON] Service started.");
 
   return true;
 }
@@ -760,19 +925,31 @@ async function startShopeeAutoReviewJob(io) {
 // =====================================================
 
 async function updateShopeeAutoReviewSettings(data = {}) {
-  const allowed = [
-    "enabled",
-    "intervalMinutes",
-    "maxRepliesPerRun",
-    "delayBetweenRepliesMs",
-  ];
-
   const update = {};
 
-  for (const key of allowed) {
-    if (data[key] !== undefined) {
-      update[key] = data[key];
-    }
+  if (data.enabled !== undefined) {
+    update.enabled = Boolean(data.enabled);
+  }
+
+  if (data.intervalMinutes !== undefined) {
+    update.intervalMinutes = Math.max(
+      1,
+      Math.min(1440, Number(data.intervalMinutes) || 1),
+    );
+  }
+
+  if (data.maxRepliesPerRun !== undefined) {
+    update.maxRepliesPerRun = Math.max(
+      1,
+      Math.min(100, Number(data.maxRepliesPerRun) || 10),
+    );
+  }
+
+  if (data.delayBetweenRepliesMs !== undefined) {
+    update.delayBetweenRepliesMs = Math.max(
+      0,
+      Math.min(60000, Number(data.delayBetweenRepliesMs) || 0),
+    );
   }
 
   const setting = await ShopeeAutoReviewSetting.findOneAndUpdate(
@@ -790,7 +967,7 @@ async function updateShopeeAutoReviewSettings(data = {}) {
 
   if (setting.enabled && data.runNow === true) {
     runShopeeAutoReview().catch((error) => {
-      console.error("[Shopee Auto Review]", error);
+      console.error("[SHOPEE CRON] Manual run error:", error);
     });
   }
 
@@ -806,7 +983,23 @@ async function updateShopeeAutoReviewSettings(data = {}) {
 // =====================================================
 
 async function getShopeeAutoReviewStatus() {
-  return getSetting();
+  const setting = await getSetting();
+
+  const now = Date.now();
+
+  const lockedAt = setting.lockedAt ? new Date(setting.lockedAt).getTime() : 0;
+
+  const lockAgeMs = lockedAt ? now - lockedAt : 0;
+
+  const lockExpired =
+    Boolean(setting.lockToken) && lockAgeMs > LOCK_TIMEOUT_MINUTES * 60 * 1000;
+
+  return {
+    ...setting.toObject(),
+    lockExpired,
+    lockAgeMs,
+    serverTime: new Date(),
+  };
 }
 
 // =====================================================
@@ -829,6 +1022,8 @@ async function stopShopeeAutoReviewJob() {
   );
 
   emitReview("auto:stopped", {});
+
+  console.log("[SHOPEE CRON] Stopped.");
 }
 
 // =====================================================
