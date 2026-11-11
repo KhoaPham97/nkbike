@@ -1,5 +1,9 @@
 const mongoose = require("mongoose");
 
+// =====================================================
+// SHOPEE RETURN ITEM
+// =====================================================
+
 const shopeeReturnItemSchema = new mongoose.Schema(
   {
     itemId: {
@@ -43,35 +47,44 @@ const shopeeReturnItemSchema = new mongoose.Schema(
       default: "",
     },
 
-    // Số lượng khách yêu cầu trả
+    // Số lượng theo đơn vị Shopee đã quy đổi sang đơn vị kho.
     requestedQty: {
       type: Number,
       default: 0,
       min: 0,
     },
 
-    // Số lượng shop thực tế nhận lại
+    // Hệ số quy đổi SKU Shopee sang đơn vị kho.
+    quantityMultiplier: {
+      type: Number,
+      default: 1,
+      min: 1,
+    },
+
     receivedQty: {
       type: Number,
       default: 0,
       min: 0,
     },
 
-    // Số lượng hàng tốt có thể nhập lại kho bán
     goodQty: {
       type: Number,
       default: 0,
       min: 0,
     },
 
-    // Số lượng hàng lỗi/hỏng
     damagedQty: {
       type: Number,
       default: 0,
       min: 0,
     },
 
-    // Liên kết sản phẩm nội bộ
+    restockedQty: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
     productId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "products",
@@ -90,20 +103,25 @@ const shopeeReturnItemSchema = new mongoose.Schema(
       trim: true,
     },
 
-    // Đánh dấu đã mapping SKU
+    // Trạng thái mapping SKU mới.
+    mappingStatus: {
+      type: String,
+      enum: ["unmapped", "mapped", "ambiguous"],
+      default: "unmapped",
+    },
+
+    // Tương thích dữ liệu cũ.
     isMapped: {
       type: Boolean,
       default: false,
     },
 
-    // Ghi chú kiểm hàng
     inspectionNote: {
       type: String,
       default: "",
       trim: true,
     },
 
-    // Đánh dấu đã xử lý tồn kho
     stockProcessed: {
       type: Boolean,
       default: false,
@@ -119,6 +137,10 @@ const shopeeReturnItemSchema = new mongoose.Schema(
   },
 );
 
+// =====================================================
+// SHOPEE RETURN
+// =====================================================
+
 const shopeeReturnSchema = new mongoose.Schema(
   {
     shopId: {
@@ -128,17 +150,40 @@ const shopeeReturnSchema = new mongoose.Schema(
       index: true,
     },
 
-    // Mã yêu cầu trả hàng Shopee
+    // CUSTOMER_RETURN hoặc DELIVERY_FAILED.
+    returnType: {
+      type: String,
+      enum: ["CUSTOMER_RETURN", "DELIVERY_FAILED"],
+      default: "CUSTOMER_RETURN",
+      index: true,
+    },
+
+    sourceType: {
+      type: String,
+      enum: ["CUSTOMER_RETURN", "DELIVERY_FAILED"],
+      default: "CUSTOMER_RETURN",
+    },
+
+    // Mã phiếu nội bộ.
+    // Khách trả hàng: return_sn của Shopee.
+    // Giao thất bại: DELIVERY-{package_number}.
     returnSn: {
       type: String,
       required: true,
       trim: true,
     },
 
-    // Mã đơn hàng Shopee
     orderSn: {
       type: String,
       required: true,
+      trim: true,
+      index: true,
+    },
+
+    // Chỉ có với phiếu giao thất bại.
+    packageNumber: {
+      type: String,
+      default: "",
       trim: true,
       index: true,
     },
@@ -159,6 +204,17 @@ const shopeeReturnSchema = new mongoose.Schema(
       default: "",
     },
 
+    // Các trường chuẩn hóa từ Shopee.
+    reason: {
+      type: String,
+      default: "",
+    },
+
+    textReason: {
+      type: String,
+      default: "",
+    },
+
     refundAmount: {
       type: Number,
       default: 0,
@@ -170,14 +226,114 @@ const shopeeReturnSchema = new mongoose.Schema(
       default: "VND",
     },
 
-    // Trạng thái gốc từ Shopee
+    // Trạng thái gốc từ Shopee.
     shopeeReturnStatus: {
       type: String,
       default: "",
       index: true,
     },
 
-    // Trạng thái xử lý nội bộ
+    shopeeStatus: {
+      type: String,
+      default: "",
+      index: true,
+    },
+
+    // Mã vận đơn.
+    trackingNumber: {
+      type: String,
+      default: "",
+      trim: true,
+      index: true,
+    },
+
+    needsLogistics: {
+      type: Boolean,
+      default: false,
+    },
+
+    validationType: {
+      type: String,
+      default: "",
+    },
+
+    requestType: {
+      type: Number,
+      default: null,
+    },
+
+    createTime: {
+      type: Date,
+      default: null,
+    },
+
+    updateTime: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+
+    returnShipDueDate: {
+      type: Date,
+      default: null,
+    },
+
+    returnSellerDueDate: {
+      type: Date,
+      default: null,
+    },
+
+    orderItemKey: {
+      type: String,
+      default: "",
+    },
+
+    requestedShopeeQty: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    quantityMultiplier: {
+      type: Number,
+      default: 1,
+      min: 1,
+    },
+
+    restockedStockQty: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    items: {
+      type: [shopeeReturnItemSchema],
+      default: [],
+    },
+
+    // =================================================
+    // TRẠNG THÁI KHO MỚI
+    // =================================================
+
+    warehouseStatus: {
+      type: String,
+      enum: [
+        "waiting",
+        "in_transit",
+        "received",
+        "inspected",
+        "partially_restocked",
+        "restocked",
+        "closed",
+      ],
+      default: "waiting",
+      index: true,
+    },
+
+    // =================================================
+    // TƯƠNG THÍCH TRẠNG THÁI CŨ
+    // =================================================
+
     status: {
       type: String,
       enum: [
@@ -194,12 +350,6 @@ const shopeeReturnSchema = new mongoose.Schema(
       index: true,
     },
 
-    items: {
-      type: [shopeeReturnItemSchema],
-      default: [],
-    },
-
-    // Đã thực sự nhận hàng hoàn hay chưa
     isReceived: {
       type: Boolean,
       default: false,
@@ -217,7 +367,6 @@ const shopeeReturnSchema = new mongoose.Schema(
       default: null,
     },
 
-    // Đã kiểm tra hàng hoàn hay chưa
     isInspected: {
       type: Boolean,
       default: false,
@@ -234,9 +383,10 @@ const shopeeReturnSchema = new mongoose.Schema(
       default: null,
     },
 
-    // Phương án xử lý:
-    // RESTOCK: nhập lại kho
-    // NO_RESTOCK: không nhập lại, giữ nguyên phần tồn đã xuất
+    // =================================================
+    // QUYẾT ĐỊNH NHẬP KHO
+    // =================================================
+
     resolution: {
       type: String,
       enum: ["RESTOCK", "NO_RESTOCK", null],
@@ -260,7 +410,18 @@ const shopeeReturnSchema = new mongoose.Schema(
       default: null,
     },
 
-    // Đã hoàn tất xử lý kho
+    // Alias tương thích service mới.
+    resolvedAt: {
+      type: Date,
+      default: null,
+    },
+
+    resolvedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "users",
+      default: null,
+    },
+
     stockProcessed: {
       type: Boolean,
       default: false,
@@ -272,7 +433,10 @@ const shopeeReturnSchema = new mongoose.Schema(
       default: null,
     },
 
-    // Tổng số lượng
+    // =================================================
+    // THỐNG KÊ
+    // =================================================
+
     totalRequestedQty: {
       type: Number,
       default: 0,
@@ -293,13 +457,26 @@ const shopeeReturnSchema = new mongoose.Schema(
       default: 0,
     },
 
-    // Dữ liệu gốc từ Shopee để đối chiếu
+    // =================================================
+    // DỮ LIỆU ĐỒNG BỘ
+    // =================================================
+
     rawShopeeData: {
       type: mongoose.Schema.Types.Mixed,
       default: null,
     },
 
+    rawData: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
+
     syncedAt: {
+      type: Date,
+      default: Date.now,
+    },
+
+    lastSyncedAt: {
       type: Date,
       default: Date.now,
     },
@@ -321,7 +498,11 @@ const shopeeReturnSchema = new mongoose.Schema(
   },
 );
 
-// Một yêu cầu trả hàng chỉ được lưu một lần trong mỗi shop.
+// =====================================================
+// INDEX
+// =====================================================
+
+// Mỗi phiếu chỉ tồn tại một lần trong mỗi shop.
 shopeeReturnSchema.index(
   {
     shopId: 1,
@@ -329,6 +510,7 @@ shopeeReturnSchema.index(
   },
   {
     unique: true,
+    name: "unique_shopee_return_per_shop",
   },
 );
 
@@ -339,9 +521,30 @@ shopeeReturnSchema.index({
 });
 
 shopeeReturnSchema.index({
+  shopId: 1,
+  warehouseStatus: 1,
+  updateTime: -1,
+});
+
+shopeeReturnSchema.index({
+  shopId: 1,
+  returnType: 1,
+  updateTime: -1,
+});
+
+shopeeReturnSchema.index({
   orderSn: 1,
   shopId: 1,
 });
+
+shopeeReturnSchema.index({
+  packageNumber: 1,
+  shopId: 1,
+});
+
+// =====================================================
+// MODEL
+// =====================================================
 
 const ShopeeReturn =
   mongoose.models.ShopeeReturn ||

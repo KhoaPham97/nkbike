@@ -1,531 +1,774 @@
 const mongoose = require("mongoose");
+const crypto = require("crypto");
 
 const ShopeeReturn = require("../models/ShopeeReturn");
-const ShopeeReturnStockLog = require("../models/ShopeeReturnStockLog");
 const ShopeeSkuMapping = require("../models/ShopeeSkuMapping");
+const ShopeeStockTransaction = require("../models/ShopeeStockTransaction");
+const InventoryBatch = require("../models/InventoryBatch");
+const InventoryHistory = require("../models/inventoryHistory");
 const { Product } = require("../models/products");
-
-const { callShopeeShopApi } = require("./shopeeService");
-
-const RETURN_LIST_PATH = "/api/v2/returns/get_return_list";
-const RETURN_DETAIL_PATH = "/api/v2/returns/get_return_detail";
-
-const MAX_PAGE_SIZE = 100;
-const MAX_DATE_RANGE_SECONDS = 15 * 24 * 60 * 60;
+const { getShopeeOrders, callShopeeShopApi } = require("./shopeeService");
 
 // =====================================================
-// HELPERS
+// CONFIG
 // =====================================================
 
-function toDate(timestamp) {
-  const value = Number(timestamp);
+const PAGE_SIZE = 100;
+const MAX_PAGES = 1000;
+const LOOKBACK_DAYS = 30;
+const WINDOW_DAYS = 15;
 
-  if (!Number.isFinite(value) || value <= 0) {
-    return null;
-  }
+const CUSTOMER_RETURN = "CUSTOMER_RETURN";
+const DELIVERY_FAILED = "DELIVERY_FAILED";
 
-  return new Date(value * 1000);
-}
+const text = (value) =>
+  value === null || value === undefined ? "" : String(value).trim();
 
-function toStringId(value, fallback = "") {
-  if (value === undefined || value === null) {
-    return fallback;
-  }
+const number = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
 
-  return String(value);
-}
+const validQty = (value) =>
+  Number.isInteger(Number(value)) && Number(value) >= 0;
 
-function getResponse(data) {
-  return data?.response || data || {};
-}
+const toDate = (unix) => {
+  const value = Number(unix);
+  return Number.isFinite(value) && value > 0 ? new Date(value * 1000) : null;
+};
 
-function getShopeeItems(returnData) {
-  return Array.isArray(returnData?.item) ? returnData.item : [];
-}
+const getUserId = (user) => {
+  const id = user?._id || user?.id || null;
 
-function normalizeReturnItem(item, mapping) {
-  const itemId = toStringId(item.item_id);
-  const modelId = toStringId(item.model_id, "0");
+  return id && mongoose.isValidObjectId(id) ? id : null;
+};
+
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const getResponse = (data) => data?.response || data || {};
+
+// =====================================================
+// SHOPEE API HELPERS
+// =====================================================
+
+/**
+ * Lấy danh sách mã phiếu trả hàng.
+ *
+ * Shopee:
+ * GET /api/v2/returns/get_return_list
+ *
+ * page_no bắt đầu từ 0 và tăng từng trang.
+ */
+async function getShopeeReturnList({ shopId, timeFrom, timeTo, pageNo = 0 }) {
+  const data = await callShopeeShopApi({
+    shopId,
+    path: "/api/v2/returns/get_return_list",
+    method: "GET",
+    params: {
+      page_no: pageNo,
+      page_size: PAGE_SIZE,
+      update_time_from: timeFrom,
+      update_time_to: timeTo,
+    },
+  });
+
+  const response = getResponse(data);
 
   return {
-    itemId,
-    modelId,
-
-    itemName: item.name || item.item_name || "",
-    modelName: item.model_name || "",
-
-    itemSku: item.item_sku || "",
-    variationSku: item.variation_sku || "",
-
-    requestedQty: Math.max(0, Number(item.amount || 0)),
-
-    productId: mapping?.productId || null,
-    variantCode: mapping?.variantCode || "",
-    variantName: mapping?.variantName || "",
-
-    mappingStatus: mapping ? "mapped" : "unmapped",
-
-    receivedQty: 0,
-    goodQty: 0,
-    damagedQty: 0,
-    restockedQty: 0,
+    rows: response.return || response.returns || response.return_list || [],
+    more: Boolean(response.more),
   };
 }
 
-function validateDateRange(from, to) {
-  const start = Number(from);
-  const end = Number(to);
+/**
+ * Lấy chi tiết một phiếu trả hàng.
+ */
+async function getShopeeReturnDetailFromApi(shopId, returnSn) {
+  const data = await callShopeeShopApi({
+    shopId,
+    path: "/api/v2/returns/get_return_detail",
+    method: "GET",
+    params: {
+      return_sn: returnSn,
+    },
+  });
 
-  if (
-    !Number.isFinite(start) ||
-    !Number.isFinite(end) ||
-    start <= 0 ||
-    end <= 0 ||
-    start >= end
-  ) {
-    throw new Error("Khoảng thời gian đồng bộ hàng hoàn không hợp lệ.");
+  const response = getResponse(data);
+
+  return response.return || response;
+}
+
+/**
+ * Lấy chi tiết các package.
+ * Shopee giới hạn 50 package mỗi lần gọi.
+ */
+async function getShopeePackageDetails(shopId, packageNumbers = []) {
+  const uniqueNumbers = [...new Set(packageNumbers.map(text).filter(Boolean))];
+
+  const result = [];
+
+  for (let i = 0; i < uniqueNumbers.length; i += 50) {
+    const chunk = uniqueNumbers.slice(i, i + 50);
+
+    const data = await callShopeeShopApi({
+      shopId,
+      path: "/api/v2/order/get_package_detail",
+      method: "GET",
+      params: {
+        package_number_list: chunk.join(","),
+      },
+    });
+
+    const response = getResponse(data);
+
+    result.push(...(response.package_list || []));
   }
 
-  if (end - start > MAX_DATE_RANGE_SECONDS) {
-    throw new Error("Shopee chỉ cho phép lọc tối đa 15 ngày mỗi lần.");
-  }
-
-  return {
-    from: start,
-    to: end,
-  };
+  return result;
 }
 
 // =====================================================
 // SKU MAPPING
 // =====================================================
 
-async function getReturnItemMappings(shopId, items) {
-  const normalizedItems = (items || []).map((item) => ({
-    itemId: toStringId(item.item_id),
-    modelId: toStringId(item.model_id, "0"),
-  }));
+/**
+ * Chuyển item Shopee thành item kho nội bộ.
+ *
+ * Shopee item/model:
+ * item_id + model_id
+ *
+ * Internal:
+ * productId + variantCode
+ */
+async function mapShopeeItems(shopId, rawItems = []) {
+  const result = [];
 
-  const uniqueKeys = [
-    ...new Set(
-      normalizedItems
-        .filter((item) => item.itemId)
-        .map((item) => `${item.itemId}:${item.modelId}`),
-    ),
-  ];
+  for (const raw of rawItems) {
+    const itemId = text(raw.item_id ?? raw.itemId);
 
-  if (!uniqueKeys.length) {
-    return new Map();
-  }
+    const modelId = text(raw.model_id ?? raw.modelId ?? "0") || "0";
 
-  const itemIds = [
-    ...new Set(normalizedItems.map((item) => item.itemId).filter(Boolean)),
-  ];
+    const mapping = itemId
+      ? await ShopeeSkuMapping.findOne({
+          shopId: String(shopId),
+          itemId,
+          modelId,
+          isActive: true,
+        }).lean()
+      : null;
 
-  const mappings = await ShopeeSkuMapping.find({
-    shopId: String(shopId),
-    itemId: { $in: itemIds },
-    isActive: true,
-  }).lean();
+    const multiplier = Math.max(1, number(mapping?.quantityMultiplier, 1));
 
-  const mappingMap = new Map();
+    const shopeeQty = Math.max(
+      0,
+      number(raw.amount ?? raw.model_quantity ?? raw.quantity ?? raw.qty),
+    );
 
-  for (const mapping of mappings) {
-    const key = `${String(mapping.itemId)}:${String(mapping.modelId || "0")}`;
+    const mapped = Boolean(mapping?.productId && mapping?.variantCode);
 
-    mappingMap.set(key, mapping);
-  }
+    result.push({
+      itemId,
+      modelId,
 
-  return mappingMap;
-}
+      itemName: text(raw.name ?? raw.item_name ?? raw.itemName),
 
-// =====================================================
-// SHOPEE API
-// =====================================================
+      modelName: text(raw.model_name ?? raw.modelName),
 
-async function getShopeeReturnDetail(shopId, returnSn) {
-  if (!shopId || !returnSn) {
-    throw new Error("Thiếu shopId hoặc returnSn.");
-  }
+      itemSku: text(raw.item_sku ?? raw.itemSku),
 
-  const data = await callShopeeShopApi({
-    shopId: String(shopId),
-    path: RETURN_DETAIL_PATH,
-    method: "GET",
-    params: {
-      return_sn: String(returnSn),
-    },
-  });
+      variationSku: text(
+        raw.variation_sku ?? raw.model_sku ?? raw.variationSku,
+      ),
 
-  const result = getResponse(data);
+      image: text(raw.image ?? raw.image_url),
 
-  if (!result.return_sn) {
-    throw new Error(`Shopee không trả về chi tiết yêu cầu hoàn ${returnSn}.`);
+      requestedQty: Math.ceil(shopeeQty * multiplier),
+
+      quantityMultiplier: multiplier,
+
+      productId: mapping?.productId || null,
+
+      variantCode: text(mapping?.variantCode),
+
+      variantName: text(mapping?.variantName),
+
+      mappingStatus: mapped ? "mapped" : "unmapped",
+
+      isMapped: mapped,
+
+      receivedQty: 0,
+      goodQty: 0,
+      damagedQty: 0,
+      restockedQty: 0,
+    });
   }
 
   return result;
 }
 
-async function getShopeeReturnListPage({
-  shopId,
-  pageNo = 0,
-  pageSize = 100,
-  updateTimeFrom,
-  updateTimeTo,
-  createTimeFrom,
-  createTimeTo,
-  status,
-}) {
-  const params = {
-    page_no: Number(pageNo),
-    page_size: Math.min(Math.max(Number(pageSize) || 100, 1), MAX_PAGE_SIZE),
-  };
+/**
+ * Giữ lại kết quả kiểm kho cũ khi đồng bộ lại Shopee.
+ *
+ * Không được để cron sync ghi đè số lượng đã kiểm tra.
+ */
+function preserveInspectedItems(oldItems = [], newItems = []) {
+  return newItems.map((item) => {
+    const old = oldItems.find(
+      (row) =>
+        text(row.itemId) === text(item.itemId) &&
+        text(row.modelId || "0") === text(item.modelId || "0"),
+    );
 
-  if (updateTimeFrom !== undefined && updateTimeFrom !== null) {
-    params.update_time_from = Number(updateTimeFrom);
-  }
+    if (!old) return item;
 
-  if (updateTimeTo !== undefined && updateTimeTo !== null) {
-    params.update_time_to = Number(updateTimeTo);
-  }
+    return {
+      ...item,
 
-  if (createTimeFrom !== undefined && createTimeFrom !== null) {
-    params.create_time_from = Number(createTimeFrom);
-  }
+      receivedQty: number(old.receivedQty),
+      goodQty: number(old.goodQty),
+      damagedQty: number(old.damagedQty),
+      restockedQty: number(old.restockedQty),
 
-  if (createTimeTo !== undefined && createTimeTo !== null) {
-    params.create_time_to = Number(createTimeTo);
-  }
+      inspectionNote: text(old.inspectionNote),
 
-  if (status) {
-    params.status = String(status);
-  }
-
-  const data = await callShopeeShopApi({
-    shopId: String(shopId),
-    path: RETURN_LIST_PATH,
-    method: "GET",
-    params,
+      stockProcessed: Boolean(old.stockProcessed),
+      stockProcessedAt: old.stockProcessedAt || null,
+    };
   });
-
-  return {
-    raw: data,
-    response: getResponse(data),
-  };
 }
 
 // =====================================================
-// UPSERT RETURN
+// PRESERVE INTERNAL WORKFLOW
 // =====================================================
 
-async function saveShopeeReturn(shopId, returnData) {
-  const returnSn = toStringId(returnData.return_sn);
-
-  if (!returnSn) {
-    throw new Error("Yêu cầu trả hàng không có return_sn.");
+function preserveWorkflow(update, existing) {
+  if (!existing) {
+    update.warehouseStatus = "in_transit";
+    update.status = "RETURN_SHIPPING";
+    return;
   }
 
-  const items = getShopeeItems(returnData);
+  const fields = [
+    "warehouseStatus",
+    "status",
 
-  const mappingMap = await getReturnItemMappings(shopId, items);
+    "isReceived",
+    "receivedAt",
+    "receivedBy",
 
-  const normalizedItems = items.map((item) => {
-    const itemId = toStringId(item.item_id);
-    const modelId = toStringId(item.model_id, "0");
+    "isInspected",
+    "inspectedAt",
+    "inspectedBy",
 
-    const mapping = mappingMap.get(`${itemId}:${modelId}`);
+    "resolution",
+    "resolutionNote",
+    "resolutionAt",
+    "resolutionBy",
 
-    return normalizeReturnItem(item, mapping);
-  });
+    "resolvedAt",
+    "resolvedBy",
+
+    "stockProcessed",
+    "stockProcessedAt",
+
+    "restockedStockQty",
+
+    "totalReceivedQty",
+    "totalGoodQty",
+    "totalDamagedQty",
+  ];
+
+  for (const field of fields) {
+    if (existing[field] !== undefined) {
+      update[field] = existing[field];
+    }
+  }
+}
+
+// =====================================================
+// CUSTOMER RETURN
+// =====================================================
+
+async function saveCustomerReturn(shopId, raw) {
+  const returnSn = text(raw.return_sn ?? raw.returnSn);
+
+  const orderSn = text(raw.order_sn ?? raw.orderSn);
+
+  if (!returnSn || !orderSn) {
+    throw new Error("Phiếu trả hàng thiếu return_sn hoặc order_sn.");
+  }
 
   const existing = await ShopeeReturn.findOne({
     shopId: String(shopId),
     returnSn,
   });
 
-  // Giữ nguyên thông tin kiểm hàng và xử lý kho đã nhập.
-  const mergedItems = normalizedItems.map((newItem) => {
-    const oldItem = existing?.items?.find(
-      (item) =>
-        String(item.itemId) === String(newItem.itemId) &&
-        String(item.modelId || "0") === String(newItem.modelId || "0"),
-    );
+  const rawItems = Array.isArray(raw.item)
+    ? raw.item
+    : Array.isArray(raw.items)
+      ? raw.items
+      : [];
 
-    if (!oldItem) {
-      return newItem;
-    }
+  const mappedItems = await mapShopeeItems(shopId, rawItems);
 
-    return {
-      ...newItem,
+  const items = preserveInspectedItems(existing?.items || [], mappedItems);
 
-      receivedQty: oldItem.receivedQty || 0,
-      goodQty: oldItem.goodQty || 0,
-      damagedQty: oldItem.damagedQty || 0,
-      restockedQty: oldItem.restockedQty || 0,
-
-      // Nếu đã mapping thủ công thì không tự ghi đè.
-      productId: oldItem.productId || newItem.productId,
-      variantCode: oldItem.variantCode || newItem.variantCode,
-      variantName: oldItem.variantName || newItem.variantName,
-
-      mappingStatus:
-        oldItem.mappingStatus === "mapped" ? "mapped" : newItem.mappingStatus,
-    };
-  });
-
-  const totalRequestedQty = normalizedItems.reduce(
-    (sum, item) => sum + Number(item.requestedQty || 0),
+  const requestedQty = items.reduce(
+    (sum, item) => sum + number(item.requestedQty),
     0,
   );
 
   const update = {
     shopId: String(shopId),
+
     returnSn,
-    orderSn: toStringId(returnData.order_sn),
+    orderSn,
 
-    shopeeStatus: returnData.status || "",
+    returnType: CUSTOMER_RETURN,
+    sourceType: CUSTOMER_RETURN,
 
-    reason: returnData.reason || "",
-    textReason: returnData.text_reason || "",
+    buyerUsername: text(raw.buyer_username ?? raw.buyerUsername),
 
-    refundAmount: Number(returnData.refund_amount || 0),
-    currency: returnData.currency || "VND",
+    reason: text(raw.reason),
+    textReason: text(raw.text_reason ?? raw.textReason),
 
-    needsLogistics: Boolean(returnData.needs_logistics),
-    trackingNumber: returnData.tracking_number || "",
+    returnReason: text(raw.reason),
+    returnDescription: text(raw.text_reason ?? raw.textReason),
 
-    validationType: returnData.validation_type || "",
+    refundAmount: number(raw.refund_amount ?? raw.refundAmount),
 
-    requestType:
-      returnData.return_refund_request_type === undefined
-        ? null
-        : Number(returnData.return_refund_request_type),
+    currency: text(raw.currency) || "VND",
 
-    createTime: toDate(returnData.create_time),
-    updateTime: toDate(returnData.update_time),
+    shopeeReturnStatus: text(raw.status ?? raw.return_status),
 
-    returnShipDueDate: toDate(returnData.return_ship_due_date),
-    returnSellerDueDate: toDate(returnData.return_seller_due_date),
+    shopeeStatus: text(raw.status ?? raw.return_status),
 
-    requestedShopeeQty: totalRequestedQty,
+    needsLogistics: Boolean(raw.needs_logistics ?? raw.needsLogistics),
 
-    items: mergedItems,
+    trackingNumber: text(raw.tracking_number ?? raw.trackingNumber),
 
-    rawData: returnData,
+    validationType: text(raw.validation_type),
+
+    requestType: raw.return_refund_request_type ?? raw.request_type ?? null,
+
+    createTime: toDate(raw.create_time) || raw.createTime || null,
+
+    updateTime: toDate(raw.update_time) || raw.updateTime || new Date(),
+
+    returnShipDueDate: toDate(raw.return_ship_due_date),
+
+    returnSellerDueDate: toDate(raw.return_seller_due_date),
+
+    requestedShopeeQty: requestedQty,
+    totalRequestedQty: requestedQty,
+
+    items,
+
+    rawShopeeData: raw,
+    rawData: raw,
+
+    syncedAt: new Date(),
     lastSyncedAt: new Date(),
+
+    lastSyncError: "",
   };
 
-  // Không cho Shopee sync ghi đè trạng thái kho nội bộ.
-  const saved = await ShopeeReturn.findOneAndUpdate(
+  preserveWorkflow(update, existing);
+
+  return ShopeeReturn.findOneAndUpdate(
     {
       shopId: String(shopId),
       returnSn,
     },
     {
       $set: update,
-      $setOnInsert: {
-        warehouseStatus: "waiting",
-        restockedStockQty: 0,
-      },
     },
     {
-      new: true,
       upsert: true,
+      new: true,
       setDefaultsOnInsert: true,
       runValidators: true,
     },
   );
+}
 
-  return saved;
+/**
+ * Đồng bộ khách trả hàng.
+ *
+ * Chia thời gian thành từng cửa sổ tối đa 15 ngày.
+ */
+async function syncCustomerReturns(shopId, now) {
+  const from = now - LOOKBACK_DAYS * 86400;
+
+  let fetched = 0;
+  let saved = 0;
+  let failed = 0;
+
+  const errors = [];
+
+  for (
+    let windowStart = from;
+    windowStart < now;
+    windowStart += WINDOW_DAYS * 86400
+  ) {
+    const windowEnd = Math.min(windowStart + WINDOW_DAYS * 86400, now);
+
+    for (let pageNo = 0; pageNo < MAX_PAGES; pageNo += 1) {
+      const page = await getShopeeReturnList({
+        shopId,
+        timeFrom: windowStart,
+        timeTo: windowEnd,
+        pageNo,
+      });
+
+      const rows = Array.isArray(page.rows) ? page.rows : [];
+
+      fetched += rows.length;
+
+      for (const row of rows) {
+        const returnSn = text(row.return_sn);
+
+        try {
+          // Chi tiết riêng để lấy đầy đủ item/model.
+          const detail = await getShopeeReturnDetailFromApi(shopId, returnSn);
+
+          await saveCustomerReturn(shopId, detail);
+
+          saved += 1;
+        } catch (error) {
+          failed += 1;
+
+          errors.push({
+            type: CUSTOMER_RETURN,
+            returnSn,
+            message: error.message,
+          });
+
+          // Lưu thông tin danh sách nếu API detail lỗi.
+          try {
+            const fallback = await saveCustomerReturn(shopId, row);
+
+            if (fallback) {
+              fallback.lastSyncError = error.message;
+              await fallback.save();
+            }
+          } catch (saveError) {
+            errors.push({
+              type: CUSTOMER_RETURN,
+              returnSn,
+              message: "Lỗi lưu dữ liệu dự phòng: " + saveError.message,
+            });
+          }
+        }
+      }
+
+      if (!page.more || rows.length === 0) {
+        break;
+      }
+    }
+  }
+
+  return {
+    fetched,
+    saved,
+    failed,
+    errors,
+  };
 }
 
 // =====================================================
-// SYNC RETURNS
+// DELIVERY FAILED
 // =====================================================
 
 /**
- * Đồng bộ danh sách yêu cầu trả hàng.
- *
- * Mặc định lấy 15 ngày gần nhất theo update_time.
- * Có thể truyền updateTimeFrom/updateTimeTo để đồng bộ
- * theo khoảng thời gian cụ thể.
- *
- * Không cộng kho.
- * Không trừ kho.
+ * Lấy package_number từ đơn hàng.
  */
+function getPackageNumbers(order) {
+  const packages = Array.isArray(order.package_list) ? order.package_list : [];
 
-async function syncShopeeReturns({
-  shopId,
-  updateTimeFrom,
-  updateTimeTo,
-  pageSize = 100,
-  maxPages = 100,
-  fetchDetails = true,
-} = {}) {
-  if (!shopId) {
-    throw new Error("Vui lòng chọn shop Shopee.");
+  return packages
+    .map((item) => text(item.package_number ?? item.packageNumber))
+    .filter(Boolean);
+}
+
+/**
+ * Tạo phiếu giao thất bại.
+ *
+ * Một order có thể có nhiều package.
+ * Mỗi package có một phiếu riêng.
+ */
+async function saveFailedPackage(shopId, pkg) {
+  const packageNumber = text(pkg.package_number ?? pkg.packageNumber);
+
+  const orderSn = text(pkg.order_sn ?? pkg.orderSn);
+
+  if (!packageNumber || !orderSn) {
+    throw new Error("Package thiếu package_number hoặc order_sn.");
+  }
+
+  const returnSn = "DELIVERY-" + packageNumber;
+
+  const existing = await ShopeeReturn.findOne({
+    shopId: String(shopId),
+    returnSn,
+  });
+
+  const rawItems = Array.isArray(pkg.item_list)
+    ? pkg.item_list
+    : Array.isArray(pkg.items)
+      ? pkg.items
+      : [];
+
+  const mappedItems = await mapShopeeItems(
+    shopId,
+    rawItems.map((item) => ({
+      ...item,
+      amount: item.model_quantity ?? item.quantity ?? 0,
+      name: item.item_name ?? item.name ?? "",
+    })),
+  );
+
+  const items = preserveInspectedItems(existing?.items || [], mappedItems);
+
+  const requestedQty = items.reduce(
+    (sum, item) => sum + number(item.requestedQty),
+    0,
+  );
+
+  const update = {
+    shopId: String(shopId),
+
+    returnSn,
+    orderSn,
+
+    returnType: DELIVERY_FAILED,
+    sourceType: DELIVERY_FAILED,
+
+    packageNumber,
+
+    shopeeReturnStatus: text(pkg.fulfillment_status),
+
+    shopeeStatus: text(pkg.fulfillment_status),
+
+    trackingNumber: text(pkg.tracking_number),
+
+    requestedShopeeQty: requestedQty,
+    totalRequestedQty: requestedQty,
+
+    updateTime: toDate(pkg.update_time) || new Date(),
+
+    items,
+
+    reason: "DELIVERY_FAILED",
+
+    returnReason: "DELIVERY_FAILED",
+
+    textReason: "Giao hàng không thành công. Kiện hàng đang quay về shop.",
+
+    returnDescription:
+      "Giao hàng không thành công. Kiện hàng đang quay về shop.",
+
+    rawShopeeData: pkg,
+    rawData: pkg,
+
+    syncedAt: new Date(),
+    lastSyncedAt: new Date(),
+
+    lastSyncError: "",
+  };
+
+  preserveWorkflow(update, existing);
+
+  return ShopeeReturn.findOneAndUpdate(
+    {
+      shopId: String(shopId),
+      returnSn,
+    },
+    {
+      $set: update,
+    },
+    {
+      upsert: true,
+      new: true,
+      setDefaultsOnInsert: true,
+      runValidators: true,
+    },
+  );
+}
+
+/**
+ * Đồng bộ các kiện giao thất bại.
+ *
+ * Không lấy order_status = CANCELLED để suy ra giao thất bại.
+ * Chỉ dùng fulfillment_status của package.
+ */
+async function syncDeliveryFailedPackages(shopId, now) {
+  const from = now - LOOKBACK_DAYS * 86400;
+
+  let fetchedOrders = 0;
+  let fetchedPackages = 0;
+  let saved = 0;
+  let failed = 0;
+
+  const errors = [];
+
+  for (
+    let windowStart = from;
+    windowStart < now;
+    windowStart += WINDOW_DAYS * 86400
+  ) {
+    const windowEnd = Math.min(windowStart + WINDOW_DAYS * 86400, now);
+
+    let cursor = "";
+
+    for (let page = 0; page < MAX_PAGES; page += 1) {
+      const result = await getShopeeOrders({
+        shopId,
+        timeFrom: windowStart,
+        timeTo: windowEnd,
+        pageSize: PAGE_SIZE,
+        cursor,
+        timeRangeField: "update_time",
+      });
+
+      const orders = Array.isArray(result.orderList) ? result.orderList : [];
+
+      fetchedOrders += orders.length;
+
+      const packageNumbers = [...new Set(orders.flatMap(getPackageNumbers))];
+
+      if (packageNumbers.length > 0) {
+        const packages = await getShopeePackageDetails(shopId, packageNumbers);
+
+        fetchedPackages += packages.length;
+
+        for (const pkg of packages) {
+          const fulfillmentStatus = text(pkg.fulfillment_status).toUpperCase();
+
+          if (fulfillmentStatus !== "LOGISTICS_DELIVERY_FAILED") {
+            continue;
+          }
+
+          try {
+            await saveFailedPackage(shopId, pkg);
+            saved += 1;
+          } catch (error) {
+            failed += 1;
+
+            errors.push({
+              type: DELIVERY_FAILED,
+              packageNumber: text(pkg.package_number),
+              orderSn: text(pkg.order_sn),
+              message: error.message,
+            });
+          }
+        }
+      }
+
+      if (!result.more || !result.nextCursor) {
+        break;
+      }
+
+      cursor = result.nextCursor;
+    }
+  }
+
+  return {
+    fetchedOrders,
+    fetchedPackages,
+    saved,
+    failed,
+    errors,
+  };
+}
+
+// =====================================================
+// SYNC ALL
+// =====================================================
+
+async function syncShopeeReturns(shopId) {
+  const id = text(shopId);
+
+  if (!id) {
+    throw new Error("Thiếu shopId.");
   }
 
   const now = Math.floor(Date.now() / 1000);
 
-  const end = Number(updateTimeTo || now);
+  const customerReturns = await syncCustomerReturns(id, now);
 
-  const start = Number(updateTimeFrom || end - 14 * 24 * 60 * 60);
-
-  const range = validateDateRange(start, end);
-
-  const limit = Math.min(Math.max(Number(pageSize) || 100, 1), MAX_PAGE_SIZE);
-
-  const pageLimit = Math.min(Math.max(Number(maxPages) || 100, 1), 1000);
-
-  let pageNo = 0;
-
-  let totalFetched = 0;
-  let totalSaved = 0;
-  let totalFailed = 0;
-
-  const errors = [];
-  const syncedReturns = [];
-
-  while (pageNo < pageLimit) {
-    const page = await getShopeeReturnListPage({
-      shopId,
-      pageNo,
-      pageSize: limit,
-      updateTimeFrom: range.from,
-      updateTimeTo: range.to,
-    });
-
-    const returnList = Array.isArray(page.response.return)
-      ? page.response.return
-      : [];
-
-    totalFetched += returnList.length;
-
-    if (!returnList.length) {
-      break;
-    }
-
-    for (const returnSummary of returnList) {
-      const returnSn = toStringId(returnSummary.return_sn);
-
-      if (!returnSn) {
-        totalFailed += 1;
-        errors.push({
-          returnSn: "",
-          message: "Shopee trả về yêu cầu không có return_sn.",
-        });
-        continue;
-      }
-
-      try {
-        let returnDetail = returnSummary;
-
-        if (fetchDetails) {
-          returnDetail = await getShopeeReturnDetail(shopId, returnSn);
-        }
-
-        const saved = await saveShopeeReturn(shopId, returnDetail);
-
-        totalSaved += 1;
-
-        syncedReturns.push({
-          returnSn,
-          orderSn: saved.orderSn,
-          shopeeStatus: saved.shopeeStatus,
-          warehouseStatus: saved.warehouseStatus,
-        });
-      } catch (error) {
-        totalFailed += 1;
-
-        errors.push({
-          returnSn,
-          message: error.message || String(error),
-        });
-
-        console.error(`[Shopee Return Sync] ${returnSn}:`, error.message);
-      }
-    }
-
-    if (!page.response.more) {
-      break;
-    }
-
-    // Shopee page_no hoạt động theo offset.
-    pageNo += limit;
-  }
+  const deliveryFailed = await syncDeliveryFailedPackages(id, now);
 
   return {
-    success: totalFailed === 0,
-    shopId: String(shopId),
+    shopId: id,
 
-    totalFetched,
-    totalSaved,
-    totalFailed,
+    customerReturns,
+    deliveryFailed,
 
-    hasMore: pageNo >= pageLimit,
+    totalFetched: customerReturns.fetched + deliveryFailed.fetchedPackages,
 
-    returns: syncedReturns,
-    errors,
+    totalSaved: customerReturns.saved + deliveryFailed.saved,
+
+    totalFailed: customerReturns.failed + deliveryFailed.failed,
+
+    errors: [...customerReturns.errors, ...deliveryFailed.errors],
 
     syncedAt: new Date(),
   };
 }
 
 // =====================================================
-// GET RETURNS
+// LIST
 // =====================================================
 
 async function getShopeeReturns({
   shopId,
   page = 1,
   limit = 20,
-  warehouseStatus,
-  shopeeStatus,
-  keyword,
-  mappingStatus,
-} = {}) {
-  const filter = {};
+  keyword = "",
+  warehouseStatus = "",
+  returnType = "all",
+}) {
+  const filter = {
+    shopId: String(shopId),
+  };
 
-  if (shopId) {
-    filter.shopId = String(shopId);
-  }
-
-  if (warehouseStatus) {
+  if (warehouseStatus && warehouseStatus !== "all") {
     filter.warehouseStatus = warehouseStatus;
   }
 
-  if (shopeeStatus) {
-    filter.shopeeStatus = shopeeStatus;
+  if (returnType && returnType !== "all") {
+    filter.returnType = returnType;
   }
 
-  if (mappingStatus) {
-    filter["items.mappingStatus"] = mappingStatus;
+  const search = text(keyword);
+
+  if (search) {
+    const regex = new RegExp(escapeRegex(search), "i");
+
+    filter.$or = [
+      { returnSn: regex },
+      { orderSn: regex },
+      { trackingNumber: regex },
+      { packageNumber: regex },
+      { buyerUsername: regex },
+      { textReason: regex },
+    ];
   }
 
-  if (keyword) {
-    const search = String(keyword).trim();
+  const currentPage = Math.max(1, Number(page) || 1);
 
-    if (search) {
-      filter.$or = [
-        { returnSn: { $regex: search, $options: "i" } },
-        { orderSn: { $regex: search, $options: "i" } },
-        { trackingNumber: { $regex: search, $options: "i" } },
-      ];
-    }
-  }
-
-  const currentPage = Math.max(Number(page) || 1, 1);
-
-  const pageSize = Math.min(Math.max(Number(limit) || 20, 1), 100);
-
-  const skip = (currentPage - 1) * pageSize;
+  const pageLimit = Math.min(100, Math.max(1, Number(limit) || 20));
 
   const [returns, total] = await Promise.all([
     ShopeeReturn.find(filter)
-      .sort({ updateTime: -1, createdAt: -1 })
-      .skip(skip)
-      .limit(pageSize)
+      .sort({
+        updateTime: -1,
+        updatedAt: -1,
+        _id: -1,
+      })
+      .skip((currentPage - 1) * pageLimit)
+      .limit(pageLimit)
       .lean(),
 
     ShopeeReturn.countDocuments(filter),
@@ -533,255 +776,332 @@ async function getShopeeReturns({
 
   return {
     returns,
+    total,
+
     pagination: {
       page: currentPage,
-      limit: pageSize,
+      limit: pageLimit,
       total,
-      totalPages: Math.ceil(total / pageSize),
+      totalPages: Math.max(1, Math.ceil(total / pageLimit)),
     },
   };
 }
 
-async function getShopeeReturnBySn(shopId, returnSn) {
-  const result = await ShopeeReturn.findOne({
-    shopId: String(shopId),
-    returnSn: String(returnSn),
-  }).lean();
-
-  if (!result) {
-    throw new Error("Không tìm thấy yêu cầu trả hàng.");
-  }
-
-  return result;
-}
-
 // =====================================================
-// RECEIVE RETURN
+// DETAIL
 // =====================================================
 
-/**
- * Xác nhận hàng hoàn đã thực sự về kho.
- * Không cộng tồn kho tại bước này.
- */
-
-async function receiveShopeeReturn({
-  shopId,
-  returnSn,
-  userId,
-  note = "",
-} = {}) {
-  const returnDoc = await ShopeeReturn.findOne({
+async function getShopeeReturnDetail({ shopId, returnSn }) {
+  const doc = await ShopeeReturn.findOne({
     shopId: String(shopId),
-    returnSn: String(returnSn),
+    returnSn: text(returnSn),
   });
 
-  if (!returnDoc) {
-    throw new Error("Không tìm thấy yêu cầu trả hàng.");
+  if (!doc) {
+    throw new Error("Không tìm thấy phiếu hàng hoàn.");
   }
 
-  if (returnDoc.warehouseStatus === "restocked") {
-    throw new Error("Yêu cầu này đã được nhập lại kho.");
+  // Chỉ lấy live detail cho yêu cầu khách trả hàng.
+  if (doc.returnType === CUSTOMER_RETURN) {
+    try {
+      const detail = await getShopeeReturnDetailFromApi(shopId, doc.returnSn);
+
+      if (detail?.return_sn || detail?.returnSn) {
+        await saveCustomerReturn(shopId, detail);
+
+        const refreshed = await ShopeeReturn.findOne({
+          shopId: String(shopId),
+          returnSn: doc.returnSn,
+        });
+
+        return refreshed;
+      }
+    } catch (error) {
+      console.warn(
+        "[Shopee Return] Không lấy được live detail:",
+        error.message,
+      );
+    }
   }
 
-  if (returnDoc.warehouseStatus === "closed") {
-    throw new Error("Yêu cầu này đã đóng.");
-  }
-
-  returnDoc.warehouseStatus = "received";
-  returnDoc.receivedAt = new Date();
-  returnDoc.receivedBy = userId || null;
-
-  if (note) {
-    returnDoc.rawData = {
-      ...(returnDoc.rawData || {}),
-      warehouseReceiveNote: String(note),
-    };
-  }
-
-  await returnDoc.save();
-
-  return returnDoc;
+  return doc;
 }
 
 // =====================================================
-// INSPECT RETURN
+// RECEIVE
 // =====================================================
 
-/**
- * Xác nhận kết quả kiểm hàng.
- *
- * items:
- * [
- *   {
- *     itemId: "123",
- *     modelId: "456",
- *     receivedQty: 2,
- *     goodQty: 1,
- *     damagedQty: 1
- *   }
- * ]
- *
- * Các số lượng ở đây là số lượng thực tế theo đơn vị
- * sản phẩm kho Nhật Khang Bike.
- *
- * Chưa cộng kho tại bước kiểm hàng.
- */
+async function receiveShopeeReturn({ shopId, returnSn, note = "", user }) {
+  const doc = await ShopeeReturn.findOne({
+    shopId: String(shopId),
+    returnSn: text(returnSn),
+  });
+
+  if (!doc) {
+    throw new Error("Không tìm thấy phiếu hàng hoàn.");
+  }
+
+  if (doc.resolution) {
+    throw new Error("Phiếu này đã được xử lý kho.");
+  }
+
+  if (doc.warehouseStatus === "received") {
+    return doc;
+  }
+
+  if (doc.warehouseStatus === "inspected") {
+    throw new Error("Phiếu đã được kiểm tra.");
+  }
+
+  if (!["waiting", "in_transit"].includes(doc.warehouseStatus)) {
+    throw new Error("Trạng thái hiện tại không thể xác nhận nhận hàng.");
+  }
+
+  doc.warehouseStatus = "received";
+
+  doc.status = "RECEIVED";
+
+  doc.isReceived = true;
+
+  doc.receivedAt = new Date();
+
+  doc.receivedBy = getUserId(user);
+
+  if (text(note)) {
+    doc.note = text(note);
+  }
+
+  // Chỉ xác nhận nhận hàng.
+  // Tuyệt đối không thay đổi Product.qty tại đây.
+  await doc.save();
+
+  return doc;
+}
+
+// =====================================================
+// INSPECT
+// =====================================================
 
 async function inspectShopeeReturn({
   shopId,
   returnSn,
-  userId,
-  items,
+  items = [],
   note = "",
-} = {}) {
-  if (!Array.isArray(items) || !items.length) {
-    throw new Error("Vui lòng nhập kết quả kiểm hàng.");
-  }
+  user,
+}) {
+  const session = await mongoose.startSession();
 
-  const returnDoc = await ShopeeReturn.findOne({
-    shopId: String(shopId),
-    returnSn: String(returnSn),
-  });
+  let result;
 
-  if (!returnDoc) {
-    throw new Error("Không tìm thấy yêu cầu trả hàng.");
-  }
+  try {
+    await session.withTransaction(async () => {
+      const doc = await ShopeeReturn.findOne({
+        shopId: String(shopId),
+        returnSn: text(returnSn),
+      }).session(session);
 
-  if (!["received", "inspected"].includes(returnDoc.warehouseStatus)) {
-    throw new Error("Bạn cần xác nhận đã nhận hàng trước khi kiểm hàng.");
-  }
+      if (!doc) {
+        throw new Error("Không tìm thấy phiếu hàng hoàn.");
+      }
 
-  for (const input of items) {
-    const itemId = toStringId(input.itemId);
-    const modelId = toStringId(input.modelId, "0");
+      if (doc.warehouseStatus !== "received") {
+        throw new Error("Chỉ được kiểm tra sau khi xác nhận đã nhận hàng.");
+      }
 
-    const target = returnDoc.items.find(
-      (item) =>
-        String(item.itemId) === itemId &&
-        String(item.modelId || "0") === modelId,
-    );
+      if (!Array.isArray(items) || items.length !== doc.items.length) {
+        throw new Error("Danh sách kiểm tra không khớp danh sách sản phẩm.");
+      }
 
-    if (!target) {
-      throw new Error(
-        `Không tìm thấy sản phẩm hoàn itemId=${itemId}, modelId=${modelId}.`,
+      for (const input of items) {
+        const item = doc.items.find(
+          (row) =>
+            text(row.itemId) === text(input.itemId) &&
+            text(row.modelId || "0") === text(input.modelId || "0"),
+        );
+
+        if (!item) {
+          throw new Error("Không tìm thấy dòng sản phẩm cần kiểm tra.");
+        }
+
+        const receivedQty = number(input.receivedQty, -1);
+
+        const goodQty = number(input.goodQty, -1);
+
+        const damagedQty = number(input.damagedQty, -1);
+
+        if (
+          !validQty(receivedQty) ||
+          !validQty(goodQty) ||
+          !validQty(damagedQty)
+        ) {
+          throw new Error("Số lượng kiểm tra phải là số nguyên không âm.");
+        }
+
+        if (goodQty + damagedQty > receivedQty) {
+          throw new Error(
+            "Số lượng hàng tốt + hàng hỏng không được vượt số lượng thực nhận.",
+          );
+        }
+
+        if (receivedQty > number(item.requestedQty)) {
+          throw new Error(
+            "Số lượng thực nhận không được vượt số lượng dự kiến.",
+          );
+        }
+
+        item.receivedQty = receivedQty;
+        item.goodQty = goodQty;
+        item.damagedQty = damagedQty;
+
+        item.inspectionNote = text(input.inspectionNote);
+      }
+
+      const totalReceived = doc.items.reduce(
+        (sum, item) => sum + number(item.receivedQty),
+        0,
       );
-    }
 
-    const receivedQty = Number(input.receivedQty || 0);
-    const goodQty = Number(input.goodQty || 0);
-    const damagedQty = Number(input.damagedQty || 0);
-
-    if (
-      !Number.isInteger(receivedQty) ||
-      !Number.isInteger(goodQty) ||
-      !Number.isInteger(damagedQty) ||
-      receivedQty < 0 ||
-      goodQty < 0 ||
-      damagedQty < 0
-    ) {
-      throw new Error("Số lượng kiểm hàng phải là số nguyên không âm.");
-    }
-
-    if (goodQty + damagedQty > receivedQty) {
-      throw new Error(
-        `Sản phẩm ${target.itemName}: hàng tốt + hàng hỏng không được vượt số lượng nhận.`,
+      const totalGood = doc.items.reduce(
+        (sum, item) => sum + number(item.goodQty),
+        0,
       );
-    }
 
-    target.receivedQty = receivedQty;
-    target.goodQty = goodQty;
-    target.damagedQty = damagedQty;
+      const totalDamaged = doc.items.reduce(
+        (sum, item) => sum + number(item.damagedQty),
+        0,
+      );
+
+      doc.totalReceivedQty = totalReceived;
+      doc.totalGoodQty = totalGood;
+      doc.totalDamagedQty = totalDamaged;
+
+      doc.warehouseStatus = "inspected";
+
+      doc.status = "INSPECTED";
+
+      doc.isReceived = true;
+      doc.isInspected = true;
+
+      doc.inspectedAt = new Date();
+      doc.inspectedBy = getUserId(user);
+
+      doc.resolutionNote = text(note);
+
+      await doc.save({ session });
+
+      result = doc;
+    });
+
+    return result;
+  } finally {
+    await session.endSession();
   }
-
-  returnDoc.warehouseStatus = "inspected";
-  returnDoc.inspectedAt = new Date();
-  returnDoc.inspectedBy = userId || null;
-
-  if (note) {
-    returnDoc.rawData = {
-      ...(returnDoc.rawData || {}),
-      warehouseInspectionNote: String(note),
-    };
-  }
-
-  await returnDoc.save();
-
-  return returnDoc;
 }
 
 // =====================================================
-// RESOLVE RETURN STOCK
+// BATCH CODE
 // =====================================================
 
-/**
- * RESTOCK:
- * - Chỉ cộng hàng tốt đã kiểm tra.
- * - Không cộng hàng hỏng.
- *
- * NO_RESTOCK:
- * - Không cộng tồn kho.
- * - Đóng phiếu xử lý.
- *
- * Tồn kho và lịch sử được ghi trong cùng transaction.
- */
+function createReturnBatchCode(returnSn, index) {
+  const hash = crypto
+    .createHash("sha1")
+    .update(String(returnSn))
+    .digest("hex")
+    .slice(0, 10)
+    .toUpperCase();
 
-async function resolveShopeeReturnStock({
+  const suffix = String(index + 1).padStart(2, "0");
+
+  return `RET-${hash}-${suffix}`;
+}
+
+// =====================================================
+// RESOLVE / RESTOCK
+// =====================================================
+
+async function resolveShopeeReturn({
   shopId,
   returnSn,
   resolution,
-  userId,
   note = "",
-} = {}) {
-  if (!["RESTOCK", "NO_RESTOCK"].includes(resolution)) {
-    throw new Error("resolution phải là RESTOCK hoặc NO_RESTOCK.");
+  user,
+}) {
+  const choice = text(resolution).toUpperCase();
+
+  if (!["RESTOCK", "NO_RESTOCK"].includes(choice)) {
+    throw new Error("Phương án xử lý phải là RESTOCK hoặc NO_RESTOCK.");
   }
 
   const session = await mongoose.startSession();
 
+  let result;
+
   try {
-    let result = null;
-
     await session.withTransaction(async () => {
-      const returnDoc = await ShopeeReturn.findOne({
+      const doc = await ShopeeReturn.findOne({
         shopId: String(shopId),
-        returnSn: String(returnSn),
+        returnSn: text(returnSn),
       }).session(session);
 
-      if (!returnDoc) {
-        throw new Error("Không tìm thấy yêu cầu trả hàng.");
+      if (!doc) {
+        throw new Error("Không tìm thấy phiếu hàng hoàn.");
       }
 
-      if (returnDoc.warehouseStatus !== "inspected") {
-        throw new Error("Bạn cần nhận và kiểm hàng trước khi xử lý kho.");
+      if (doc.warehouseStatus !== "inspected") {
+        throw new Error(
+          "Phiếu phải được tiếp nhận và kiểm tra trước khi xử lý.",
+        );
       }
 
-      const existingLog = await ShopeeReturnStockLog.findOne({
-        shopId: String(shopId),
-        returnSn: String(returnSn),
+      if (doc.resolution || doc.stockProcessed) {
+        throw new Error("Phiếu hàng hoàn đã được xử lý trước đó.");
+      }
+
+      const idempotencyKey = [
+        "SHOPEE",
+        "RETURN",
+        shopId,
+        doc.returnSn,
+        "RESOLVE",
+      ].join(":");
+
+      const duplicate = await ShopeeStockTransaction.findOne({
+        idempotencyKey,
       }).session(session);
 
-      if (existingLog) {
-        throw new Error("Yêu cầu hoàn này đã được xử lý kho trước đó.");
+      if (duplicate) {
+        throw new Error("Giao dịch kho của phiếu này đã tồn tại.");
       }
 
-      const logItems = [];
+      const allocations = [];
+
       let totalRestockedQty = 0;
-      let totalDamagedQty = 0;
 
-      for (const item of returnDoc.items) {
-        const goodQty = Number(item.goodQty || 0);
-        const damagedQty = Number(item.damagedQty || 0);
+      // =============================================
+      // RESTOCK
+      // =============================================
 
-        totalDamagedQty += damagedQty;
+      if (choice === "RESTOCK") {
+        for (let index = 0; index < doc.items.length; index += 1) {
+          const item = doc.items[index];
 
-        let beforeQty = 0;
-        let afterQty = 0;
-        let restockedQty = 0;
+          const qty = number(item.goodQty);
 
-        if (resolution === "RESTOCK" && goodQty > 0) {
-          if (!item.productId || !item.variantCode) {
+          // Chỉ nhập hàng tốt.
+          if (qty <= 0) {
+            item.restockedQty = 0;
+            continue;
+          }
+
+          if (item.mappingStatus !== "mapped" && !item.isMapped) {
             throw new Error(
-              `Sản phẩm "${item.itemName}" chưa được mapping SKU. Không thể nhập kho.`,
+              `SKU "${item.itemName}" chưa được ánh xạ vào sản phẩm nội bộ.`,
+            );
+          }
+
+          if (!item.productId || !text(item.variantCode)) {
+            throw new Error(
+              `Thiếu productId hoặc variantCode của "${item.itemName}".`,
             );
           }
 
@@ -790,111 +1110,237 @@ async function resolveShopeeReturnStock({
           );
 
           if (!product) {
-            throw new Error(
-              `Không tìm thấy sản phẩm nội bộ cho "${item.itemName}".`,
-            );
+            throw new Error(`Không tìm thấy sản phẩm ${item.productId}.`);
           }
 
-          const variant = product.variants.find(
-            (value) => String(value.variantCode) === String(item.variantCode),
+          const variant = (product.variants || []).find(
+            (row) => text(row.variantCode) === text(item.variantCode),
           );
 
           if (!variant) {
             throw new Error(
-              `Không tìm thấy phân loại ${item.variantCode} của sản phẩm ${product.title}.`,
+              `Không tìm thấy phân loại ${item.variantCode} trong sản phẩm ${product.title}.`,
             );
           }
 
-          beforeQty = Number(variant.qty || 0);
-          afterQty = beforeQty + goodQty;
-          restockedQty = goodQty;
+          const beforeQty = number(variant.qty);
+
+          const afterQty = beforeQty + qty;
+
+          // Giá vốn CNY của phân loại.
+          const unitCost = Math.max(0, number(variant.unitCost));
+
+          const batchCode = createReturnBatchCode(doc.returnSn, index);
+
+          // =========================================
+          // 1. TẠO INVENTORY BATCH
+          // =========================================
+
+          const batch = new InventoryBatch({
+            batchCode,
+
+            productId: product._id,
+
+            productTitle: product.title || "",
+
+            productCode: product.code || "",
+
+            variantName: variant.name || item.variantName || "",
+
+            variantCode: item.variantCode,
+
+            importDate: new Date(),
+
+            importQty: qty,
+
+            remainingQty: qty,
+
+            unitCost,
+
+            importReceiptId: null,
+
+            importHistoryId: null,
+
+            source: "RETURN",
+
+            sourceConfidence: "high",
+
+            note:
+              `Hàng hoàn Shopee ${doc.returnSn}` +
+              (note ? ` - ${text(note)}` : ""),
+
+            createdBy: getUserId(user),
+
+            isActive: true,
+          });
+
+          await batch.save({ session });
+
+          // =========================================
+          // 2. CỘNG TỒN KHO
+          // =========================================
 
           variant.qty = afterQty;
 
-          // Đồng bộ tổng tồn kho sản phẩm từ các phân loại.
-          product.qty = product.variants.reduce(
-            (sum, value) => sum + Number(value.qty || 0),
-            0,
-          );
+          product.qty = number(product.qty) + qty;
+
+          product.updated_at = new Date();
 
           await product.save({ session });
 
-          item.restockedQty = restockedQty;
-          totalRestockedQty += restockedQty;
+          // =========================================
+          // 3. GHI INVENTORY HISTORY
+          // =========================================
+
+          const history = new InventoryHistory({
+            type: "import",
+
+            referenceType: "shopee_return",
+
+            referenceId: doc._id,
+
+            referenceCode: doc.returnSn,
+
+            productId: product._id,
+
+            productTitle: product.title || "",
+
+            productCode: product.code || "",
+
+            variantName: variant.name || item.variantName || "",
+
+            variantCode: item.variantCode,
+
+            batchId: batch._id,
+
+            batchCode,
+
+            unitCost,
+
+            qty,
+
+            beforeQty,
+
+            afterQty,
+
+            note: `Nhập hàng hoàn Shopee ${doc.returnSn}`,
+
+            createdBy: getUserId(user),
+
+            created_at: new Date(),
+          });
+
+          await history.save({ session });
+
+          // Liên kết ngược lịch sử vào lô.
+          batch.importHistoryId = history._id;
+
+          await batch.save({ session });
+
+          item.restockedQty = qty;
+          item.stockProcessed = true;
+          item.stockProcessedAt = new Date();
+
+          allocations.push({
+            productId: product._id,
+
+            variantCode: item.variantCode,
+
+            variantName: variant.name || item.variantName || "",
+
+            batchId: batch._id,
+
+            batchCode,
+
+            qty,
+
+            unitCost,
+
+            beforeQty,
+
+            afterQty,
+          });
+
+          totalRestockedQty += qty;
         }
-
-        logItems.push({
-          productId: item.productId || null,
-          variantCode: item.variantCode || "",
-          variantName: item.variantName || "",
-
-          itemId: item.itemId || "",
-          modelId: item.modelId || "0",
-
-          itemSku: item.itemSku || "",
-          variationSku: item.variationSku || "",
-
-          goodQty,
-          damagedQty,
-
-          beforeQty,
-          afterQty,
-          restockedQty,
-
-          message:
-            resolution === "RESTOCK"
-              ? "Đã xử lý theo kết quả kiểm hàng."
-              : "Không nhập lại tồn kho.",
-        });
       }
 
-      const log = new ShopeeReturnStockLog({
+      // =============================================
+      // NO_RESTOCK
+      // =============================================
+
+      if (choice === "NO_RESTOCK") {
+        for (const item of doc.items) {
+          item.restockedQty = 0;
+        }
+      }
+
+      // =============================================
+      // 4. GHI GIAO DỊCH CHỐNG TRÙNG
+      // =============================================
+
+      const transaction = new ShopeeStockTransaction({
+        idempotencyKey,
+
         shopId: String(shopId),
-        returnSn: String(returnSn),
-        orderSn: returnDoc.orderSn || "",
-        returnId: returnDoc._id,
 
-        resolution,
+        orderSn: doc.orderSn,
 
-        items: logItems,
+        returnSn: doc.returnSn,
 
-        totalRestockedQty,
-        totalDamagedQty,
+        kind: choice === "RESTOCK" ? "return_import" : "return_adjustment",
 
-        processedBy: userId || null,
-        processedAt: new Date(),
+        allocations,
 
-        note,
+        totalQty: totalRestockedQty,
 
-        status: "SUCCESS",
+        status: "completed",
+
+        note: choice + (note ? ` - ${text(note)}` : ""),
+
+        createdBy: getUserId(user),
       });
 
-      await log.save({ session });
+      await transaction.save({ session });
 
-      returnDoc.restockedStockQty = totalRestockedQty;
+      // =============================================
+      // 5. ĐÓNG PHIẾU
+      // =============================================
 
-      returnDoc.warehouseStatus =
-        resolution === "RESTOCK"
-          ? totalRestockedQty > 0
-            ? "restocked"
-            : "closed"
-          : "closed";
+      doc.resolution = choice;
 
-      returnDoc.rawData = {
-        ...(returnDoc.rawData || {}),
-        warehouseResolution: resolution,
-        warehouseResolutionNote: String(note || ""),
-      };
+      doc.resolutionNote = text(note);
 
-      await returnDoc.save({ session });
+      doc.resolutionAt = new Date();
+
+      doc.resolutionBy = getUserId(user);
+
+      // Alias mới.
+      doc.resolvedAt = new Date();
+
+      doc.resolvedBy = getUserId(user);
+
+      doc.restockedStockQty = totalRestockedQty;
+
+      doc.stockProcessed = true;
+
+      doc.stockProcessedAt = new Date();
+
+      doc.status = "COMPLETED";
+
+      doc.warehouseStatus =
+        choice === "RESTOCK" && totalRestockedQty > 0 ? "restocked" : "closed";
+
+      await doc.save({ session });
 
       result = {
-        success: true,
-        returnSn: String(returnSn),
-        resolution,
+        returnDoc: doc,
+
+        transaction,
+
         totalRestockedQty,
-        totalDamagedQty,
-        warehouseStatus: returnDoc.warehouseStatus,
+
+        resolution: choice,
       };
     });
 
@@ -909,16 +1355,15 @@ async function resolveShopeeReturnStock({
 // =====================================================
 
 module.exports = {
-  getShopeeReturnDetail,
-  getShopeeReturnListPage,
-
   syncShopeeReturns,
-  saveShopeeReturn,
+
+  syncCustomerReturns,
+  syncDeliveryFailedPackages,
 
   getShopeeReturns,
-  getShopeeReturnBySn,
+  getShopeeReturnDetail,
 
   receiveShopeeReturn,
   inspectShopeeReturn,
-  resolveShopeeReturnStock,
+  resolveShopeeReturn,
 };

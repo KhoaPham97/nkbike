@@ -28,44 +28,55 @@ async function getStockSyncSettings() {
   return settings;
 }
 
-async function updateStockSyncSettings(payload = {}, updatedBy = null) {
-  const allowedFields = [
-    "enabled",
-    "maxRetries",
-    "retryDelayMs",
-    "safetyBuffer",
-  ];
+async function updateShopeeStock({
+  shopId,
+  itemId,
+  modelId,
+  targetQty,
+  hasModel,
+}) {
+  const normalizedStock = normalizeStock(targetQty);
 
-  const update = {};
+  const stockItem = {
+    model_id: hasModel ? Number(modelId) : 0,
+    seller_stock: [
+      {
+        stock: normalizedStock,
+      },
+    ],
+  };
 
-  for (const field of allowedFields) {
-    if (payload[field] !== undefined) {
-      update[field] = payload[field];
-    }
+  const body = {
+    item_id: Number(itemId),
+    stock_list: [stockItem],
+  };
+
+  const data = await callShopeeShopApi({
+    shopId: String(shopId),
+    path: "/api/v2/product/update_stock",
+    method: "POST",
+    body,
+  });
+
+  const result = data.response || data;
+
+  const failureList = result.failure_list || [];
+
+  if (failureList.length > 0) {
+    const failure = failureList[0];
+
+    throw new Error(
+      failure.failed_reason ||
+        failure.message ||
+        failure.error ||
+        `Shopee từ chối cập nhật tồn kho itemId=${itemId}`,
+    );
   }
 
-  // Cron được cố định mỗi 5 phút theo cấu hình đã thống nhất.
-  update.intervalMinutes = 5;
-
-  if (updatedBy && mongoose.isValidObjectId(updatedBy)) {
-    update.updatedBy = updatedBy;
-  }
-
-  const settings = await ShopeeStockSyncSetting.findOneAndUpdate(
-    { _id: "global" },
-    {
-      $set: update,
-      $setOnInsert: { _id: "global" },
-    },
-    {
-      new: true,
-      upsert: true,
-      runValidators: true,
-      setDefaultsOnInsert: true,
-    },
-  );
-
-  return settings;
+  return {
+    requestId: data.request_id || null,
+    response: result,
+  };
 }
 
 // =====================================================
