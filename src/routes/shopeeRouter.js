@@ -8,6 +8,9 @@ const shopeeOrderController = require("../controllers/shopeeOrderController");
 const shopeeStockController = require("../controllers/shopeeStockController");
 const shopeeAutoStockController = require("../controllers/shopeeAutoStockController");
 const shopeeRevenueController = require("../controllers/shopeeRevenueController");
+const shopeeProductManagementController = require("../controllers/shopeeProductManagementController");
+const shopeeStockSyncController = require("../controllers/shopeeStockSyncController");
+
 const adminAuth = [auth, adminOnly];
 
 // =====================================================
@@ -234,5 +237,82 @@ router.get(
   "/revenue/orders",
   ...adminAuth,
   shopeeRevenueController.getRevenueOrdersAsync,
+);
+
+// =====================================================
+// SHOPEE LIVE PRODUCT MANAGEMENT
+// =====================================================
+
+// Danh sách sản phẩm trực tiếp từ Shopee
+router.get(
+  "/management/products",
+  ...adminAuth,
+  shopeeProductManagementController.getProducts,
+);
+
+// Chi tiết sản phẩm và phân loại
+router.get(
+  "/management/products/:itemId",
+  ...adminAuth,
+  shopeeProductManagementController.getProductDetail,
+);
+
+// Cập nhật tên, mô tả, cân nặng, kích thước
+router.put(
+  "/management/products/:itemId",
+  ...adminAuth,
+  shopeeProductManagementController.updateProductInfo,
+);
+
+// Cập nhật giá từng phân loại
+router.put(
+  "/management/products/:itemId/prices",
+  ...adminAuth,
+  shopeeProductManagementController.updateProductPrices,
+);
+
+// Cập nhật tồn kho từng phân loại
+router.put(
+  "/management/products/:itemId/stock",
+  ...adminAuth,
+  shopeeProductManagementController.updateProductStock,
+);
+// =====================================================
+// SHOPEE AUTO STOCK SYNC
+// =====================================================
+
+// Trạng thái đồng bộ
+router.get(
+  "/stock-sync/status",
+  ...adminAuth,
+  shopeeStockSyncController.getStatusAsync,
+);
+
+// Cấu hình đồng bộ
+router.get(
+  "/stock-sync/settings",
+  ...adminAuth,
+  shopeeStockSyncController.getSettingsAsync,
+);
+
+// Cập nhật cấu hình bật/tắt
+router.put(
+  "/stock-sync/settings",
+  ...adminAuth,
+  shopeeStockSyncController.updateSettingsAsync,
+);
+
+// Chạy đồng bộ thủ công
+router.post(
+  "/stock-sync/run",
+  ...adminAuth,
+  shopeeStockSyncController.runNowAsync,
+);
+
+// Lịch sử đồng bộ
+router.get(
+  "/stock-sync/history",
+  ...adminAuth,
+  shopeeStockSyncController.getHistoryAsync,
 );
 module.exports = router;
