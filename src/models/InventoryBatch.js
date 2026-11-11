@@ -98,6 +98,10 @@ const inventoryBatchSchema = new mongoose.Schema(
       type: String,
       enum: ["high", "medium", "low"],
       default: "high",
+      set: (value) =>
+        String(value || "high")
+          .trim()
+          .toLowerCase(),
     },
 
     note: {

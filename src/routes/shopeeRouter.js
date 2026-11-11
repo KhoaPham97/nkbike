@@ -10,7 +10,7 @@ const shopeeAutoStockController = require("../controllers/shopeeAutoStockControl
 const shopeeRevenueController = require("../controllers/shopeeRevenueController");
 const shopeeProductManagementController = require("../controllers/shopeeProductManagementController");
 const shopeeStockSyncController = require("../controllers/shopeeStockSyncController");
-
+const shopeeReturnController = require("../controllers/shopeeReturnController");
 const adminAuth = [auth, adminOnly];
 
 // =====================================================
@@ -314,5 +314,47 @@ router.get(
   "/stock-sync/history",
   ...adminAuth,
   shopeeStockSyncController.getHistoryAsync,
+);
+
+// =====================================================
+// SHOPEE RETURNS / REFUNDS
+// =====================================================
+
+// Đồng bộ hàng hoàn từ Shopee
+router.post(
+  "/returns/sync",
+  ...adminAuth,
+  shopeeReturnController.syncReturnsAsync,
+);
+
+// Danh sách hàng hoàn
+router.get("/returns", ...adminAuth, shopeeReturnController.getReturnsAsync);
+
+// Chi tiết một yêu cầu hoàn
+router.get(
+  "/returns/:returnSn",
+  ...adminAuth,
+  shopeeReturnController.getReturnDetailAsync,
+);
+
+// Xác nhận hàng đã về kho
+router.post(
+  "/returns/:returnSn/receive",
+  ...adminAuth,
+  shopeeReturnController.receiveReturnAsync,
+);
+
+// Kiểm tra hàng hoàn
+router.post(
+  "/returns/:returnSn/inspect",
+  ...adminAuth,
+  shopeeReturnController.inspectReturnAsync,
+);
+
+// Chọn lưu kho hoặc không lưu kho
+router.post(
+  "/returns/:returnSn/resolve",
+  ...adminAuth,
+  shopeeReturnController.resolveReturnStockAsync,
 );
 module.exports = router;

@@ -4,7 +4,7 @@ const { Product } = require("../models/products");
 const InventoryReceipt = require("../models/InventoryReceipt");
 const InventoryHistory = require("../models/inventoryHistory");
 const ImportDraft = require("../models/ImportDraft");
-
+const InventoryBatch = require("../models/InventoryBatch");
 const toNumber = (value) => {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
@@ -382,7 +382,7 @@ const createInventoryReceiptAsync = async (req, res) => {
       const productCache = new Map();
       const normalized = [];
 
-      // Kiểm tra dữ liệu trước khi thay đổi kho.
+      // 1. Kiểm tra toàn bộ dữ liệu trước khi thay đổi kho.
       for (const item of items) {
         const productId = item.productId;
         const qty = toNumber(item.qty);
@@ -445,7 +445,10 @@ const createInventoryReceiptAsync = async (req, res) => {
         });
       }
 
+      // 2. Cập nhật tồn kho và tạo phiếu nhập.
       const receiptItems = [];
+      const historyIds = [];
+
       let totalQty = 0;
       let totalAmount = 0;
 
@@ -466,18 +469,19 @@ const createInventoryReceiptAsync = async (req, res) => {
           ? toNumber(variant.qty)
           : toNumber(product.qty);
 
-        if (variant) {
-          variant.qty = beforeQty + qty;
-          product.qty = toNumber(product.qty) + qty;
+        const afterQty = beforeQty + qty;
 
-          // Giá vốn được lưu bằng CNY.
+        if (variant) {
+          variant.qty = afterQty;
+          product.qty = toNumber(product.qty) + qty;
           variant.unitCost = unitCost;
         } else {
-          product.qty = beforeQty + qty;
+          product.qty = afterQty;
           product.unitCost = unitCost;
         }
 
         product.updated_at = new Date();
+
         await product.save({ session });
 
         receiptItems.push({
@@ -493,7 +497,8 @@ const createInventoryReceiptAsync = async (req, res) => {
         totalQty += qty;
         totalAmount += total;
 
-        await InventoryHistory.create(
+        // Tạo InventoryHistory.
+        const [history] = await InventoryHistory.create(
           [
             {
               type: "import",
@@ -506,7 +511,7 @@ const createInventoryReceiptAsync = async (req, res) => {
               variantName,
               qty,
               beforeQty,
-              afterQty: beforeQty + qty,
+              afterQty,
               note: note || `Nhập kho ${code}`,
               createdBy: getUserId(req),
               created_at: new Date(),
@@ -514,8 +519,14 @@ const createInventoryReceiptAsync = async (req, res) => {
           ],
           { session },
         );
+
+        historyIds.push({
+          history,
+          item,
+        });
       }
 
+      // 3. Tạo InventoryReceipt.
       const [receipt] = await InventoryReceipt.create(
         [
           {
@@ -534,16 +545,74 @@ const createInventoryReceiptAsync = async (req, res) => {
         { session },
       );
 
-      await InventoryHistory.updateMany(
-        { referenceCode: code, referenceId: null },
-        { $set: { referenceId: receipt._id } },
-        { session },
-      );
+      // 4. Tạo InventoryBatch cho từng dòng nhập.
+      for (const { history, item } of historyIds) {
+        const {
+          productId,
+          productTitle,
+          productCode,
+          variantName,
+          qty,
+          unitCost,
+        } = item;
 
-      // Cập nhật phiếu nháp trong cùng transaction.
+        const batchCode = `${code}-${String(
+          historyIds.indexOf(
+            historyIds.find((x) => x.history._id.equals(history._id)),
+          ) + 1,
+        ).padStart(3, "0")}`;
+
+        const [batch] = await InventoryBatch.create(
+          [
+            {
+              batchCode,
+              productId,
+              productTitle,
+              productCode,
+              variantName,
+
+              importDate: new Date(),
+              importQty: qty,
+              remainingQty: qty,
+
+              // Giá vốn lưu bằng CNY.
+              unitCost,
+
+              importReceiptId: receipt._id,
+              importHistoryId: history._id,
+
+              source: "IMPORT",
+              sourceConfidence: "HIGH",
+
+              note: note || `Nhập kho ${code}`,
+              createdBy: getUserId(req),
+              isActive: true,
+            },
+          ],
+          { session },
+        );
+
+        // Liên kết batch với lịch sử nhập.
+        await InventoryHistory.updateOne(
+          { _id: history._id },
+          {
+            $set: {
+              referenceId: receipt._id,
+              batchId: batch._id,
+              batchCode: batch.batchCode,
+            },
+          },
+          { session },
+        );
+      }
+
+      // 5. Hoàn tất phiếu nháp trong cùng transaction.
       if (draftId) {
         const updateResult = await ImportDraft.updateOne(
-          { _id: draftId, status: "draft" },
+          {
+            _id: draftId,
+            status: "draft",
+          },
           {
             $set: {
               status: "completed",
@@ -565,7 +634,7 @@ const createInventoryReceiptAsync = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: "Nhập kho thành công",
+      message: "Nhập kho và tạo lô hàng thành công",
       receipt: receiptResult,
     });
   } catch (error) {
@@ -579,7 +648,6 @@ const createInventoryReceiptAsync = async (req, res) => {
     await session.endSession();
   }
 };
-
 /* =========================================================
    DANH SÁCH PHIẾU NHẬP KHO
 ========================================================= */
