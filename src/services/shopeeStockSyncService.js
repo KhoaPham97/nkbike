@@ -28,55 +28,44 @@ async function getStockSyncSettings() {
   return settings;
 }
 
-async function updateShopeeStock({
-  shopId,
-  itemId,
-  modelId,
-  targetQty,
-  hasModel,
-}) {
-  const normalizedStock = normalizeStock(targetQty);
+async function updateStockSyncSettings(payload = {}, updatedBy = null) {
+  const allowedFields = [
+    "enabled",
+    "maxRetries",
+    "retryDelayMs",
+    "safetyBuffer",
+  ];
 
-  const stockItem = {
-    model_id: hasModel ? Number(modelId) : 0,
-    seller_stock: [
-      {
-        stock: normalizedStock,
-      },
-    ],
-  };
+  const update = {};
 
-  const body = {
-    item_id: Number(itemId),
-    stock_list: [stockItem],
-  };
-
-  const data = await callShopeeShopApi({
-    shopId: String(shopId),
-    path: "/api/v2/product/update_stock",
-    method: "POST",
-    body,
-  });
-
-  const result = data.response || data;
-
-  const failureList = result.failure_list || [];
-
-  if (failureList.length > 0) {
-    const failure = failureList[0];
-
-    throw new Error(
-      failure.failed_reason ||
-        failure.message ||
-        failure.error ||
-        `Shopee từ chối cập nhật tồn kho itemId=${itemId}`,
-    );
+  for (const field of allowedFields) {
+    if (payload[field] !== undefined) {
+      update[field] = payload[field];
+    }
   }
 
-  return {
-    requestId: data.request_id || null,
-    response: result,
-  };
+  // Cron được cố định mỗi 5 phút theo cấu hình đã thống nhất.
+  update.intervalMinutes = 5;
+
+  if (updatedBy && mongoose.isValidObjectId(updatedBy)) {
+    update.updatedBy = updatedBy;
+  }
+
+  const settings = await ShopeeStockSyncSetting.findOneAndUpdate(
+    { _id: "global" },
+    {
+      $set: update,
+      $setOnInsert: { _id: "global" },
+    },
+    {
+      new: true,
+      upsert: true,
+      runValidators: true,
+      setDefaultsOnInsert: true,
+    },
+  );
+
+  return settings;
 }
 
 // =====================================================
@@ -235,24 +224,27 @@ async function updateShopeeStock({
   targetQty,
   hasModel,
 }) {
+  const normalizedStock = normalizeStock(targetQty);
+
   const stockItem = {
-    normal_stock: normalizeStock(targetQty),
+    model_id: hasModel ? Number(modelId) : 0,
+    seller_stock: [
+      {
+        stock: normalizedStock,
+      },
+    ],
   };
 
-  if (hasModel) {
-    stockItem.model_id = Number(modelId);
-  }
+  const body = {
+    item_id: Number(itemId),
+    stock_list: [stockItem],
+  };
 
   const data = await callShopeeShopApi({
-    shopId,
+    shopId: String(shopId),
     path: "/api/v2/product/update_stock",
     method: "POST",
-    params: {
-      item_id: Number(itemId),
-    },
-    body: {
-      stock_list: [stockItem],
-    },
+    body,
   });
 
   const result = data.response || data;
@@ -263,7 +255,8 @@ async function updateShopeeStock({
     const failure = failureList[0];
 
     throw new Error(
-      failure.message ||
+      failure.failed_reason ||
+        failure.message ||
         failure.error ||
         `Shopee từ chối cập nhật tồn kho itemId=${itemId}`,
     );
