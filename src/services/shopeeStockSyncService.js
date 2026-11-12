@@ -325,6 +325,21 @@ async function syncOneMapping({ mapping, settings, snapshot, logResult }) {
 
   validateExactSku(mapping, variant);
 
+  const itemStatus = String(snapshot.item?.item_status || "").toUpperCase();
+  if (itemStatus !== "NORMAL") {
+    throw new Error(`Sản phẩm Shopee đang ở trạng thái ${itemStatus || "không xác định"}, không được phép chỉnh sửa.`);
+  }
+
+  if (snapshot.hasModel) {
+    const selectedModel = (snapshot.models || []).find(
+      (entry) => String(entry.model_id) === String(mapping.modelId || "0"),
+    );
+    const modelStatus = String(selectedModel?.model_status || "").toUpperCase();
+    if (!selectedModel || modelStatus !== "NORMAL") {
+      throw new Error(`SKU ${mapping.variationSku || mapping.modelId} không được phép chỉnh sửa (trạng thái ${modelStatus || "không xác định"}).`);
+    }
+  }
+
   const physicalQty = normalizeStock(variant.qty);
   const reservedQty = normalizeStock(variant.reservedQty);
   const bufferQty = normalizeStock(settings.safetyBuffer);
@@ -391,6 +406,97 @@ async function syncOneMapping({ mapping, settings, snapshot, logResult }) {
 // =====================================================
 // MAIN SYNC
 // =====================================================
+
+async function runShopeeStockSyncSelected({ shopId, itemIds = [] } = {}) {
+  if (isRunning) {
+    return { success: false, skipped: true, message: "Đang có tiến trình đồng bộ tồn kho khác chạy." };
+  }
+  const normalizedShopId = String(shopId || "").trim();
+  const selectedIds = [...new Set((Array.isArray(itemIds) ? itemIds : []).map((id) => String(id).trim()).filter((id) => /^\\d+$/.test(id)))];
+  if (!/^\\d+$/.test(normalizedShopId)) throw new Error("Vui lòng chọn shop Shopee hợp lệ.");
+  if (!selectedIds.length) throw new Error("Chọn ít nhất một sản phẩm cần đồng bộ.");
+  if (selectedIds.length > 50) throw new Error("Mỗi lần chỉ đồng bộ tối đa 50 sản phẩm.");
+
+  isRunning = true;
+  const startedAt = new Date();
+  const startedMs = Date.now();
+  let log = null;
+  try {
+    const settings = await getStockSyncSettings();
+    const mappings = await ShopeeSkuMapping.find({
+      shopId: normalizedShopId,
+      itemId: { $in: selectedIds },
+      isActive: true,
+    }).lean();
+    if (!mappings.length) throw new Error("Các sản phẩm đã chọn chưa có ánh xạ SKU đang hoạt động.");
+
+    log = await ShopeeStockSyncLog.create({ trigger: "manual_selected", status: "running", startedAt });
+    const snapshots = new Map();
+    for (const mapping of mappings) {
+      const key = String(mapping.itemId);
+      if (!snapshots.has(key)) {
+        try {
+          snapshots.set(key, await getShopeeItemStock(normalizedShopId, key));
+        } catch (error) {
+          snapshots.set(key, { error });
+        }
+      }
+    }
+
+    const results = [];
+    let successCount = 0;
+    let unchangedCount = 0;
+    let failedCount = 0;
+    for (const mapping of mappings) {
+      const result = {
+        shopId: normalizedShopId,
+        itemId: String(mapping.itemId),
+        modelId: String(mapping.modelId || "0"),
+        shopeeSku: mapping.variationSku || mapping.itemSku || "",
+        status: "pending",
+        processedAt: new Date(),
+      };
+      try {
+        const snapshot = snapshots.get(String(mapping.itemId));
+        if (!snapshot || snapshot.error) throw snapshot?.error || new Error("Không lấy được dữ liệu Shopee.");
+        await syncOneMapping({ mapping, settings, snapshot, logResult: result });
+        if (result.status === "success") successCount += 1;
+        else if (result.status === "unchanged") unchangedCount += 1;
+      } catch (error) {
+        result.status = "failed";
+        result.message = error.message || String(error);
+        result.errorCode = error.shopeeError || error.code || error.response?.data?.error || "";
+        result.requestId = error.shopeeRequestId || error.response?.data?.request_id || "";
+        failedCount += 1;
+      }
+      results.push(result);
+    }
+
+    const totalCount = results.length;
+    const status = failedCount === 0 ? "success" : (successCount + unchangedCount > 0 ? "partial" : "failed");
+    const finishedAt = new Date();
+    await ShopeeStockSyncLog.findByIdAndUpdate(log._id, {
+      $set: {
+        status, finishedAt, durationMs: Date.now() - startedMs,
+        totalCount, successCount, unchangedCount, failedCount,
+        skippedCount: 0, results,
+      },
+    });
+    return {
+      success: status !== "failed", status, logId: log._id,
+      totalCount, successCount, unchangedCount, failedCount, results,
+    };
+  } catch (error) {
+    if (log?._id) {
+      await ShopeeStockSyncLog.findByIdAndUpdate(log._id, {
+        $set: { status: "failed", finishedAt: new Date(), error: error.message || String(error) },
+      }).catch(() => {});
+    }
+    throw error;
+  } finally {
+    isRunning = false;
+  }
+}
 
 async function runShopeeStockSync({ trigger = "cron" } = {}) {
   if (isRunning) {
@@ -664,6 +770,7 @@ module.exports = {
   getStockSyncSettings,
   updateStockSyncSettings,
   runShopeeStockSync,
+  runShopeeStockSyncSelected,
   getShopeeStockSyncStatus,
   getShopeeStockSyncHistory,
 };
