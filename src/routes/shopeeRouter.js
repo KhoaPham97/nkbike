@@ -317,6 +317,13 @@ router.post(
   shopeeStockSyncController.runNowAsync,
 );
 
+// Đồng bộ tồn kho thủ công cho các sản phẩm được chọn.
+router.post(
+  "/stock-sync/run-selected",
+  ...adminAuth,
+  shopeeStockSyncController.runSelectedAsync,
+);
+
 // Lịch sử đồng bộ
 router.get(
   "/stock-sync/history",
