@@ -390,6 +390,7 @@ async function callShopeeShopApi({
   method = "GET",
   params = {},
   body = {},
+  responseType,
 }) {
   const config = getShopeeConfig();
 
@@ -444,6 +445,7 @@ async function callShopeeShopApi({
       method,
       params: queryParams,
       data: body,
+      ...(responseType ? { responseType } : {}),
     });
   }
 
@@ -507,6 +509,7 @@ async function callShopeeShopApi({
 
   try {
     const response = await executeRequest(shop);
+    if (responseType) return { data: response.data, headers: response.headers, status: response.status };
     return extractShopeeResponse(response);
   } catch (error) {
     logShopeeError(error);
@@ -529,6 +532,7 @@ async function callShopeeShopApi({
       // Thử lại đúng một lần.
       const retryResponse = await executeRequest(shop);
 
+      if (responseType) return { data: retryResponse.data, headers: retryResponse.headers, status: retryResponse.status };
       const result = extractShopeeResponse(retryResponse);
 
       console.log(
