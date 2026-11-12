@@ -8,9 +8,33 @@ const {
 } = require("../services/shopeeService");
 
 const text = (value) => String(value ?? "").trim();
+// Shopee có thể trả timestamp dạng giây, milliseconds hoặc chuỗi ngày ISO.
+ // Luôn kiểm tra Date#getTime() vì Number.isFinite() chưa loại được
+ // timestamp quá lớn khiến new Date(...) vẫn tạo ra Invalid Date.
 const dateFromSeconds = (value) => {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? new Date(number * 1000) : new Date();
+  if (value === null || value === undefined || value === "") return null;
+
+  let date;
+  const raw = String(value).trim();
+  const numeric = Number(raw);
+
+  if (raw !== "" && Number.isFinite(numeric)) {
+    let milliseconds = numeric;
+
+    if (Math.abs(numeric) >= 1e17) {
+      milliseconds = numeric / 1e6; // nanoseconds -> milliseconds
+    } else if (Math.abs(numeric) >= 1e14) {
+      milliseconds = numeric / 1e3; // microseconds -> milliseconds
+    } else if (Math.abs(numeric) < 1e11) {
+      milliseconds = numeric * 1000; // seconds -> milliseconds
+    }
+
+    date = new Date(milliseconds);
+  } else {
+    date = new Date(raw);
+  }
+
+  return Number.isFinite(date.getTime()) ? date : null;
 };
 const getMessageText = (message = {}) => {
   const content = message.content || {};
@@ -56,7 +80,7 @@ exports.getConversations = async (req, res) => {
         conversationId,
         ...buyer,
         lastMessage: last,
-        lastMessageAt: dateFromSeconds(timestamp),
+        lastMessageAt: dateFromSeconds(timestamp) || new Date(),
         unreadCount: Number(item.unread_count ?? item.unreadCount ?? 0),
         pinned: Boolean(item.pinned || item.is_pinned),
         rawData: item,
@@ -156,7 +180,7 @@ exports.sendMessage = async (req, res) => {
       messageType: "text",
       text: messageText,
       content: result.content || { text: messageText },
-      createdAtShopee: dateFromSeconds(result.created_timestamp),
+      createdAtShopee: dateFromSeconds(result.created_timestamp) || new Date(),
       rawData: result,
     };
     await ShopeeChatMessage.findOneAndUpdate(
