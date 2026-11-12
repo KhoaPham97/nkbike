@@ -32,14 +32,76 @@ exports.getSelfDesignWaybillDataAsync = async (req, res) => {
       });
     }
 
-    const body = { order_sn: orderSn };
-    if (packageNumber) body.package_number = packageNumber;
+    // Lấy danh sách package từ Shopee để xác thực quyền tự thiết kế AWB.
+    // Không tự chọn ngẫu nhiên khi một đơn đã bị tách thành nhiều kiện.
+    const orderDetailResult = await callShopeeShopApi({
+      shopId,
+      path: "/api/v2/order/get_order_detail",
+      method: "GET",
+      params: {
+        order_sn_list: orderSn,
+        response_optional_fields: "package_list",
+      },
+    });
+    const orderDetailResponse = orderDetailResult?.response || orderDetailResult;
+    const remoteOrder = (orderDetailResponse?.order_list || []).find(
+      (item) => normalize(item.order_sn) === orderSn,
+    );
+    const packages = Array.isArray(remoteOrder?.package_list)
+      ? remoteOrder.package_list
+      : [];
+
+    if (!packages.length) {
+      throw new Error("Shopee chưa trả về thông tin kiện hàng. Hãy đồng bộ lại đơn rồi thử lại.");
+    }
+
+    let selectedPackage = packageNumber
+      ? packages.find((item) => normalize(item.package_number) === packageNumber)
+      : null;
+
+    if (packageNumber && !selectedPackage) {
+      throw new Error("Mã kiện không thuộc đơn Shopee này.");
+    }
+
+    if (!packageNumber && packages.length > 1) {
+      throw new Error("Đơn này có nhiều kiện hàng. Cần chọn đúng mã kiện trước khi in để tránh in nhầm vận đơn.");
+    }
+
+    selectedPackage = selectedPackage || packages[0];
+    const resolvedPackageNumber = normalize(selectedPackage.package_number);
+
+    const packageDetailResult = await callShopeeShopApi({
+      shopId,
+      path: "/api/v2/order/get_package_detail",
+      method: "GET",
+      params: { package_number_list: resolvedPackageNumber },
+    });
+    const packageDetailResponse = packageDetailResult?.response || packageDetailResult;
+    const packageDetails = packageDetailResponse?.package_list || [];
+    const packageDetail = packageDetails.find(
+      (item) => normalize(item.package_number) === resolvedPackageNumber,
+    ) || packageDetails[0];
+
+    if (!packageDetail) {
+      throw new Error("Không xác minh được trạng thái kiện hàng từ Shopee.");
+    }
+
+    if (packageDetail.allow_self_design_awb !== true) {
+      throw new Error("Shopee không cho phép tự thiết kế vận đơn cho kiện này. Vui lòng dùng vận đơn hệ thống Shopee.");
+    }
+
+    if (!packageDetail.tracking_number) {
+      throw new Error("Kiện hàng chưa có mã vận đơn. Hãy xác nhận gửi hàng trên Shopee trước.");
+    }
 
     const apiResult = await callShopeeShopApi({
       shopId,
       path: "/api/v2/logistics/get_shipping_document_data_info",
       method: "POST",
-      body,
+      body: {
+        order_sn: orderSn,
+        package_number: resolvedPackageNumber,
+      },
     });
 
     const response = apiResult?.response || apiResult;
