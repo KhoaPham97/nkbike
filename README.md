@@ -387,7 +387,6 @@ const orderSchema = new mongoose.Schema(
 | Patch           | PATCH /user/{id}/remove          | user ID and order items    | cart items (array of JSON) | 200/400/404/500  | user token     |
 | Patch           | PATCH /user/{id}/removeAll       | user ID                    | cart items (array of JSON) | 200/400/404/500  | user token     |
 
-
 #### Product API
 
 | Standard Method | HTTP Mapping               | HTTP Request Body | HTTP Response Body                         | HTTP Status Code | Authentication |
@@ -414,7 +413,6 @@ const orderSchema = new mongoose.Schema(
 | Get             | GET /orders                   | N/A               | order list (array of JSON Objects)     | 200/400/404/500  | admin token    |
 | Patch           | PATCH /order{id}/deliver      | order ID          | Success or Fail Status                 | 200/400/404/500  | admin token    |
 
-
 #### PayPal Checkout API
 
 | Standard Method | HTTP Mapping                     | HTTP Request Body            | HTTP Response Body         | HTTP Status Code | Authentication |
@@ -429,8 +427,6 @@ const orderSchema = new mongoose.Schema(
 | Post            | POST /order/:id/create-checkout-session | Order Items (line_items)     | Stripe Checkout ID         | 200/400/404/500  | user token     |
 | Post            | POST /webhook                           | payment.intent               | payment.intent statu       | 200/400/404/500  | user token     |
 
-
-
 ### Other Information
 
 #### Setup Webhook for listening to payments via stripe
@@ -443,3 +439,9 @@ stripe listen --forward-to localhost:3001/webhook
 ```
 
 Then, you shall see your webhook signing secret. Please add your secret to your .env (environment file).
+
+---
+
+## Deployment test
+
+This README change is a test commit to verify whether Render automatically deploys the backend when commits are pushed to the main branch.
