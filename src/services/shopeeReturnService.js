@@ -1158,6 +1158,84 @@ async function resolveShopeeReturn({
 
               variant.reservedQty = currentReserved - releaseQty;
               orderItem.reservedQty = Math.max(0, number(orderItem.reservedQty) - releaseQty);
+
+              // A failed-delivery package was not deducted from physical
+              // stock. Damaged units must therefore be written off rather
+              // than silently becoming sellable when the reservation clears.
+              const damagedReservedQty = Math.min(
+                number(returnItem.damagedQty),
+                releaseQty,
+              );
+
+              if (damagedReservedQty > 0) {
+                const batches = await InventoryBatch.find({
+                  productId: product._id,
+                  variantCode: orderItem.variantCode,
+                  remainingQty: { $gt: 0 },
+                  isActive: true,
+                })
+                  .sort({ importDate: 1, _id: 1 })
+                  .session(session);
+
+                const batchAvailable = batches.reduce(
+                  (sum, batch) => sum + number(batch.remainingQty),
+                  0,
+                );
+                if (batchAvailable < damagedReservedQty) {
+                  throw new Error(
+                    "Không đủ số lượng lô tồn để ghi giảm hàng hỏng giao thất bại: " + orderItem.variantName,
+                  );
+                }
+
+                let remainingDamaged = damagedReservedQty;
+                for (const batch of batches) {
+                  if (remainingDamaged <= 0) break;
+                  const beforeBatchQty = number(batch.remainingQty);
+                  const deductedBatchQty = Math.min(beforeBatchQty, remainingDamaged);
+                  batch.remainingQty = beforeBatchQty - deductedBatchQty;
+                  batch.isActive = batch.remainingQty > 0;
+                  await batch.save({ session });
+                  allocations.push({
+                    productId: product._id,
+                    variantCode: orderItem.variantCode,
+                    variantName: orderItem.variantName || "",
+                    batchId: batch._id,
+                    batchCode: batch.batchCode || "",
+                    qty: deductedBatchQty,
+                    unitCost: number(batch.unitCost),
+                    beforeQty: beforeBatchQty,
+                    afterQty: number(batch.remainingQty),
+                  });
+                  remainingDamaged -= deductedBatchQty;
+                }
+
+                const beforeQty = number(variant.qty);
+                variant.qty = Math.max(0, beforeQty - damagedReservedQty);
+                product.qty = Math.max(
+                  0,
+                  number(product.qty) - damagedReservedQty,
+                );
+
+                const history = new InventoryHistory({
+                  type: "export",
+                  referenceType: "shopee_return_damage",
+                  referenceId: doc._id,
+                  referenceCode: doc.returnSn,
+                  productId: product._id,
+                  productTitle: product.title || "",
+                  productCode: product.code || "",
+                  variantName: variant.name || returnItem.variantName || "",
+                  variantCode: orderItem.variantCode,
+                  qty: -damagedReservedQty,
+                  beforeQty,
+                  afterQty: number(variant.qty),
+                  note: "Ghi giảm hàng hỏng từ kiện Shopee giao thất bại " + doc.returnSn,
+                  createdBy: getUserId(user),
+                  created_at: new Date(),
+                });
+                await history.save({ session });
+              }
+
               await product.save({ session });
               restockableReceivedQty = Math.max(0, receivedQty - releaseQty);
             }
