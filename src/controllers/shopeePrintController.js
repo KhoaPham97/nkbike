@@ -32,8 +32,6 @@ exports.getSelfDesignWaybillDataAsync = async (req, res) => {
       });
     }
 
-    // Lấy danh sách package từ Shopee để xác thực quyền tự thiết kế AWB.
-    // Không tự chọn ngẫu nhiên khi một đơn đã bị tách thành nhiều kiện.
     const orderDetailResult = await callShopeeShopApi({
       shopId,
       path: "/api/v2/order/get_order_detail",
@@ -122,7 +120,7 @@ exports.getSelfDesignWaybillDataAsync = async (req, res) => {
       data: {
         orderSn,
         shopId,
-        packageNumber,
+        packageNumber: resolvedPackageNumber,
         trackingNumber,
         shopeeTrackingNumber: normalize(shippingInfo.shopee_tracking_number),
         shippingCarrier: normalize(shippingInfo.shipping_carrier || order.shippingCarrier),
@@ -153,7 +151,8 @@ exports.getSelfDesignWaybillDataAsync = async (req, res) => {
             unitPrice: Number(item.unitPrice || 0),
           })),
         },
-        recipientAddressInfo: response?.recipient_address_info || null,
+        senderAddressInfo: response?.sender_address_info || shippingInfo?.sender_address_info || null,
+        recipientAddressInfo: response?.recipient_address_info || shippingInfo?.recipient_address_info || null,
       },
       requestId: apiResult?.request_id || null,
     });
