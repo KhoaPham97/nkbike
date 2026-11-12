@@ -36,7 +36,7 @@ exports.getReviewTasks = async (req, res) => {
 
     const since = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
     const [orders, reviews, conversations] = await Promise.all([
-      ShopeeOrder.find({ shopId, createTime: { $gte: since } }).sort({ createTime: -1 }).limit(100).lean(),
+      ShopeeOrder.find({ shopId, createTime: { $gte: since }, orderStatus: { $nin: ["CANCELLED", "IN_CANCELLED"] } }).sort({ createTime: -1 }).limit(100).lean(),
       ShopeeReview.find({ shopId, reviewCreatedAt: { $gte: since } }).sort({ reviewCreatedAt: -1 }).limit(100).lean(),
       ShopeeChatConversation.find({ shopId }).select("conversationId buyerId buyerName").lean(),
     ]);
