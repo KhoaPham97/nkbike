@@ -16,19 +16,11 @@ const getMessageText = (message = {}) => {
   const content = message.content || {};
   return text(content.text || content.custom_preview_text?.text || message.text || message.preview_text);
 };
-const getBuyer = (conversation = {}, selectedShopId = "") => {
-  const last = conversation.last_message || conversation.lastMessage || {};
-  const shopId = text(selectedShopId || conversation.shop_id || conversation.shopId);
-  const fromId = text(last.from_id || last.fromId);
-  const toId = text(last.to_id || last.toId);
-  const fromShopId = text(last.from_shop_id || last.fromShopId);
-  const sellerSentLast = fromShopId && fromShopId === shopId;
-  return {
-    buyerId: text(conversation.user_id || conversation.buyer_id || (sellerSentLast ? toId : fromId) || conversation.to_id),
-    buyerName: text((sellerSentLast ? last.to_user_name : last.from_user_name) || conversation.to_name || conversation.username || conversation.buyer_name || conversation.user_name || "Khách Shopee"),
-    buyerAvatar: text(conversation.avatar || conversation.profile_picture || ""),
-  };
-};
+const getBuyer = (conversation = {}) => ({
+  buyerId: text(conversation.to_id || conversation.user_id || conversation.buyer_id),
+  buyerName: text(conversation.to_name || conversation.username || conversation.buyer_name || "Khách Shopee"),
+  buyerAvatar: text(conversation.to_avatar || conversation.avatar || conversation.profile_picture || ""),
+});
 const errorMessage = (error) => {
   const data = error?.response?.data || error?.responseData || {};
   const raw = text(data.message || data.msg || error?.message);
@@ -56,9 +48,9 @@ exports.getConversations = async (req, res) => {
     for (const item of conversations) {
       const conversationId = text(item.conversation_id || item.conversationId);
       if (!conversationId) continue;
-      const buyer = getBuyer(item, shopId);
-      const last = item.last_message || item.lastMessage || {};
-      const timestamp = item.last_message_time || item.last_message_timestamp || last.created_timestamp || item.lastMessageTime;
+      const buyer = getBuyer(item);
+      const last = item.latest_message_content || item.last_message || item.lastMessage || {};
+      const timestamp = item.last_message_timestamp || item.last_message_time || last.created_timestamp || item.lastMessageTime;
       const update = {
         shopId,
         conversationId,
