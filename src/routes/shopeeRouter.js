@@ -5,6 +5,7 @@ const { auth, adminOnly } = require("../middlewares/auth");
 
 const shopeeController = require("../controllers/shopeeController");
 const shopeeOrderController = require("../controllers/shopeeOrderController");
+const shopeePrintController = require("../controllers/shopeePrintController");
 const shopeeStockController = require("../controllers/shopeeStockController");
 const shopeeAutoStockController = require("../controllers/shopeeAutoStockController");
 const shopeeRevenueController = require("../controllers/shopeeRevenueController");
@@ -46,6 +47,13 @@ router.post(
 );
 
 router.get("/orders", ...adminAuth, shopeeOrderController.getOrdersAsync);
+
+// Lấy dữ liệu logistics chính thức từ Shopee để tự thiết kế vận đơn PDF.
+router.post(
+  "/orders/:orderSn/waybill-data",
+  ...adminAuth,
+  shopeePrintController.getSelfDesignWaybillDataAsync,
+);
 
 router.get(
   "/orders/:orderSn",
