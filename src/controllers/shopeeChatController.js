@@ -75,6 +75,11 @@ exports.getConversations = async (req, res) => {
       const buyer = getBuyer(item);
       const last = item.latest_message_content || item.last_message || item.lastMessage || {};
       const timestamp = item.last_message_timestamp || item.last_message_time || last.created_timestamp || item.lastMessageTime;
+      const lastSenderId = text(last.from_id || last.fromId || last.sender_id || last.from_user_id);
+      const lastSenderShopId = text(last.from_shop_id || last.fromShopId);
+      const lastMessageFromBuyer = lastSenderShopId
+        ? lastSenderShopId !== shopId
+        : Boolean(lastSenderId && lastSenderId !== shopId);
       const update = {
         shopId,
         conversationId,
@@ -82,6 +87,7 @@ exports.getConversations = async (req, res) => {
         lastMessage: last,
         lastMessageAt: dateFromSeconds(timestamp) || new Date(),
         unreadCount: Number(item.unread_count ?? item.unreadCount ?? 0),
+        lastMessageFromBuyer,
         pinned: Boolean(item.pinned || item.is_pinned),
         rawData: item,
         syncedAt: new Date(),
@@ -104,7 +110,32 @@ exports.getConversations = async (req, res) => {
     });
   } catch (error) {
     console.error("[Shopee Chat] getConversations:", error?.response?.data || error);
-    return sendError(res, error);
+    // Giữ danh sách đã đồng bộ trước đó nếu Shopee tạm trả về 404.
+    if (Number(error?.response?.status || error?.status) === 404) {
+      try {
+        const shopId = text(req.query.shopId);
+        const cached = await ShopeeChatConversation.find({ shopId })
+          .sort({ lastMessageFromBuyer: -1, unreadCount: -1, lastMessageAt: -1 })
+          .limit(Math.min(Number(req.query.pageSize) || 40, 100))
+          .lean();
+        if (cached.length) {
+          return res.json({
+            success: true,
+            conversations: cached.map((item) => ({
+              ...item,
+              preview: getMessageText({ ...(item.lastMessage || {}), content: item.lastMessage?.content || item.lastMessage || {} }),
+              cached: true,
+            })),
+            total: cached.length,
+            cached: true,
+            warning: "Shopee đang trả về 404; đang hiển thị hội thoại đã lưu gần nhất.",
+          });
+        }
+      } catch (cacheError) {
+        console.error("[Shopee Chat] cache fallback:", cacheError);
+      }
+    }
+    return sendError(res, error, Number(error?.response?.status || error?.status) || 400);
   }
 };
 
