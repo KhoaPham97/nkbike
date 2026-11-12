@@ -10,6 +10,7 @@ const shopeeChatConversationSchema = new mongoose.Schema(
     lastMessage: { type: mongoose.Schema.Types.Mixed, default: {} },
     lastMessageAt: { type: Date, default: Date.now, index: true },
     unreadCount: { type: Number, default: 0 },
+    lastMessageFromBuyer: { type: Boolean, default: false, index: true },
     pinned: { type: Boolean, default: false },
     rawData: { type: mongoose.Schema.Types.Mixed, default: {} },
     syncedAt: { type: Date, default: Date.now },
