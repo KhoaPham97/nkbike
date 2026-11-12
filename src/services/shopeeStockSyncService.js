@@ -138,7 +138,7 @@ async function getShopeeItemStock(shopId, itemId) {
     method: "GET",
     params: {
       item_id_list: String(itemId),
-      response_optional_fields: "item_sku,model,has_model,stock_info_v2",
+      response_optional_fields: "item_sku,model,has_model,stock_info_v2,item_status",
     },
   });
 
