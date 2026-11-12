@@ -4,6 +4,7 @@ const ShopeeChatConversation = require("../models/ShopeeChatConversation");
 const ShopeeChatReviewTask = require("../models/ShopeeChatReviewTask");
 
 const clean = (value) => String(value ?? "").trim();
+const SHOP_DISPLAY_NAME = "xediennhatkhang Wavlink VN Local";
 const maskAddress = (value) => {
   const address = clean(value);
   if (!address) return "địa chỉ đã đăng ký trên Shopee";
@@ -50,7 +51,7 @@ exports.getReviewTasks = async (req, res) => {
       await upsertTask({
         shopId, eventKey, eventType: "new_order", referenceId: order.orderSn,
         buyerName, buyerId, conversationId: conversation?.conversationId || "",
-        messageText: `Xin chào, ${buyerName} đã nhận được đơn hàng của bạn ${order.orderSn}, vui lòng xác nhận lại thông tin đơn hàng tại ${maskAddress(order.recipientAddress)} nhé, chúng tôi sẽ sắp xếp gửi hàng cho bạn sớm nhất có thể.`,
+        messageText: `Xin chào, ${SHOP_DISPLAY_NAME} đã nhận được đơn hàng của bạn ${order.orderSn}, vui lòng xác nhận lại thông tin đơn hàng của bạn ${maskAddress(order.recipientAddress)} nhé, chúng tôi sẽ sắp xếp gửi hàng cho bạn sớm nhất có thể.`,
       });
 
       if (clean(order.orderStatus).toUpperCase() === "SHIPPED") {
@@ -60,7 +61,7 @@ exports.getReviewTasks = async (req, res) => {
             shopId, eventKey: makeKey(shopId, "shipped", order.orderSn), eventType: "shipped",
             referenceId: order.orderSn, buyerName, buyerId,
             conversationId: conversation?.conversationId || "",
-            messageText: `👋👋Hi ${buyerName}, gói hàng của bạn đã được gửi đi ${trackingNumber}. Nếu bạn có thể kiểm tra và quay video mở hộp ngay khi nhận được hàng, chúng tôi sẽ rất biết ơn.😊`,
+            messageText: `👋👋Hi ${SHOP_DISPLAY_NAME}, gói hàng của bạn đã được gửi đi ${trackingNumber}. Nếu bạn có thể kiểm tra và quay video mở hộp ngay khi nhận được hàng, chúng tôi sẽ rất biết ơn.😊`,
           });
         }
       }
