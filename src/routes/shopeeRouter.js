@@ -258,6 +258,13 @@ router.get(
   shopeeProductManagementController.getProducts,
 );
 
+// Kiểm tra quyền chỉnh sửa các sản phẩm đã chọn.
+router.post(
+  "/management/products/check-editable",
+  ...adminAuth,
+  shopeeProductManagementController.checkProductsEditable,
+);
+
 // Chi tiết sản phẩm và phân loại
 router.get(
   "/management/products/:itemId",
@@ -315,6 +322,13 @@ router.post(
   "/stock-sync/run",
   ...adminAuth,
   shopeeStockSyncController.runNowAsync,
+);
+
+// Đồng bộ tồn kho thủ công cho các sản phẩm được chọn.
+router.post(
+  "/stock-sync/run-selected",
+  ...adminAuth,
+  shopeeStockSyncController.runSelectedAsync,
 );
 
 // Lịch sử đồng bộ

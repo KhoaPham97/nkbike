@@ -2,6 +2,7 @@ const {
   getStockSyncSettings,
   updateStockSyncSettings,
   runShopeeStockSync,
+  runShopeeStockSyncSelected,
   getShopeeStockSyncStatus,
   getShopeeStockSyncHistory,
 } = require("../services/shopeeStockSyncService");
@@ -78,6 +79,23 @@ async function runNowAsync(req, res) {
   }
 }
 
+// POST /api/shopee/stock-sync/run-selected
+async function runSelectedAsync(req, res) {
+  try {
+    const result = await runShopeeStockSyncSelected({
+      shopId: req.body?.shopId,
+      itemIds: req.body?.itemIds,
+    });
+    return res.status(result.status === "failed" ? 207 : 200).json({
+      success: result.success,
+      message: "Đã xử lý đồng bộ tồn kho cho sản phẩm được chọn.",
+      data: result,
+    });
+  } catch (error) {
+    return handleError(res, error);
+  }
+}
+
 // GET /api/shopee/stock-sync/history?page=1&limit=20
 async function getHistoryAsync(req, res) {
   try {
@@ -101,5 +119,6 @@ module.exports = {
   getSettingsAsync,
   updateSettingsAsync,
   runNowAsync,
+  runSelectedAsync,
   getHistoryAsync,
 };
