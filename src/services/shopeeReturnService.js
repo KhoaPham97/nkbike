@@ -1087,6 +1087,12 @@ async function resolveShopeeReturn({
         orderSn: doc.orderSn,
       }).session(session);
 
+      if (!orderDoc && choice === "RESTOCK") {
+        throw new Error(
+          "Không tìm thấy đơn Shopee gốc để đối chiếu số lượng đã xuất kho. Vui lòng đồng bộ đơn hàng trước khi nhập kho hàng hoàn.",
+        );
+      }
+
       if (orderDoc) {
         for (const returnItem of doc.items) {
           const orderItem = (orderDoc.items || []).find(
@@ -1096,6 +1102,11 @@ async function resolveShopeeReturn({
           );
 
           if (!orderItem) {
+            if (choice === "RESTOCK") {
+              throw new Error(
+                "Không đối chiếu được sản phẩm hoàn với dòng hàng trong đơn Shopee. Vui lòng kiểm tra SKU mapping trước khi nhập kho.",
+              );
+            }
             restockLimitByItem.set(String(returnItem._id), 0);
             continue;
           }
