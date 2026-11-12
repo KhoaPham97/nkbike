@@ -364,6 +364,71 @@ async function assertNormalDescription(shopId, itemId) {
 // 6. CẬP NHẬT THÔNG TIN CƠ BẢN
 // =====================================================
 
+async function checkShopeeProductEditability(shopId, itemIds = []) {
+  const normalizedShopId = validateShopId(shopId);
+  if (!Array.isArray(itemIds) || !itemIds.length) {
+    throw new Error("Chọn ít nhất một sản phẩm cần kiểm tra.");
+  }
+  if (itemIds.length > 50) {
+    throw new Error("Mỗi lần chỉ kiểm tra tối đa 50 sản phẩm.");
+  }
+
+  const uniqueIds = [...new Set(itemIds.map((id) => validateId(id, "itemId")))];
+  const results = [];
+
+  for (const itemId of uniqueIds) {
+    try {
+      const detail = await getShopeeProductDetail(normalizedShopId, itemId);
+      const itemStatus = String(detail.itemStatus || "").toUpperCase();
+      const itemEditable = itemStatus === "NORMAL";
+      const skuResults = detail.hasModel
+        ? (detail.models || []).map((model) => {
+            const modelStatus = String(model.modelStatus || "").toUpperCase();
+            const editable = itemEditable && modelStatus === "NORMAL";
+            return {
+              modelId: String(model.modelId),
+              sku: String(model.modelSku || ""),
+              name: String(model.modelName || ""),
+              status: modelStatus || "UNKNOWN",
+              editable,
+              reason: !itemEditable
+                ? `Sản phẩm đang ở trạng thái ${itemStatus || "không xác định"}.`
+                : modelStatus !== "NORMAL"
+                  ? `Phân loại đang ở trạng thái ${modelStatus || "không xác định"}.`
+                  : "",
+            };
+          })
+        : [{
+            modelId: "0",
+            sku: String(detail.itemSku || ""),
+            name: detail.itemName || "",
+            status: itemStatus || "UNKNOWN",
+            editable: itemEditable,
+            reason: itemEditable ? "" : `Sản phẩm đang ở trạng thái ${itemStatus || "không xác định"}.`,
+          }];
+
+      results.push({
+        itemId: String(itemId),
+        itemName: detail.itemName || "",
+        itemStatus,
+        editable: itemEditable && skuResults.length > 0 && skuResults.every((sku) => sku.editable),
+        skus: skuResults,
+      });
+    } catch (error) {
+      results.push({
+        itemId: String(itemId),
+        itemName: "",
+        itemStatus: "ERROR",
+        editable: false,
+        skus: [],
+        reason: error.message || "Không kiểm tra được sản phẩm.",
+      });
+    }
+  }
+
+  return { shopId: normalizedShopId, results };
+}
+
 async function updateShopeeProductInfo(shopId, itemId, changes = {}) {
   const normalizedShopId = validateShopId(shopId);
   const normalizedItemId = validateId(itemId, "itemId");
