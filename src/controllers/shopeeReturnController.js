@@ -42,6 +42,11 @@ function handleError(res, error) {
     "Phương án xử lý",
     "SKU",
     "Thiếu productId",
+    "Không tìm thấy đơn Shopee",
+    "Không đối chiếu được sản phẩm",
+    "Phải phân loại đủ",
+    "Không đủ số lượng lô tồn",
+    "Đơn giao thất bại chưa ánh xạ",
   ];
 
   const statusCode = clientErrors.some((keyword) =>
