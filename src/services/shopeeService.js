@@ -1217,6 +1217,12 @@ module.exports = {
   getShopeeEscrowDetail,
   getShopeeEscrowDetailBatch,
 
+  // Shopee Chat API (manual customer service)
+  getShopeeChatConversations,
+  getShopeeChatMessages,
+  sendShopeeChatMessage,
+  readShopeeChatConversation,
+
   // Gọi API Shopee khác
   callShopeeShopApi,
 };
