@@ -91,8 +91,10 @@ const enrichOrdersWithCost = async (orders = []) => {
       const variant = (product?.variants || []).find(
         (entry) => String(entry.variantCode || "").trim() === variantCode,
       );
-      const requiredQty = Math.max(0, toNumber(item.quantity, 0)) *
-        Math.max(1, toNumber(item.quantityMultiplier, 1));
+      const requiredQty = Math.ceil(
+        Math.max(0, toNumber(item.quantity, 0)) *
+          Math.max(1, toNumber(item.quantityMultiplier, 1)),
+      );
 
       let fifoCost = 0;
       let fifoQty = 0;
