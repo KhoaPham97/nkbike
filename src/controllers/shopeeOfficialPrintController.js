@@ -59,6 +59,7 @@ async function resolvePackages(shopId, items) {
       });
     }
   }
+  if (result.length > 50) throw new Error("Shopee chỉ cho phép tối đa 50 kiện hàng mỗi lần in.");
   return result;
 }
 
