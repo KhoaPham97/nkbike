@@ -122,6 +122,119 @@ const findVariant = (product, variantName = "", variantCode = "") => {
    GET PRODUCT PRICE
 ========================================================= */
 
+
+/* =========================================================
+   ENRICH ORDER COST
+   - Ưu tiên giá vốn FIFO đã lưu trong batchAllocations.
+   - Fallback unitCost snapshot trong đơn.
+   - Đơn cũ: lấy unitCost/defaultPrice từ Product Variant.
+========================================================= */
+
+const enrichOrdersWithCost = async (orders = []) => {
+  if (!Array.isArray(orders) || orders.length === 0) return orders;
+
+  const productIds = [
+    ...new Set(
+      orders.flatMap((order) =>
+        (order.items || [])
+          .map((item) => String(item.productId || ""))
+          .filter((id) => mongoose.Types.ObjectId.isValid(id)),
+      ),
+    ),
+  ];
+
+  const products = productIds.length
+    ? await Product.find({ _id: { $in: productIds } })
+        .select("title code price unitCost variants")
+        .lean()
+    : [];
+
+  const productMap = new Map(
+    products.map((product) => [String(product._id), product]),
+  );
+
+  return orders.map((order) => {
+    let orderCostCny = 0;
+    let hasCostData = true;
+
+    const items = (order.items || []).map((item) => {
+      const qty = Math.max(0, toNumber(item.qty));
+      const product = productMap.get(String(item.productId || ""));
+      let variant = null;
+
+      if (product) {
+        try {
+          variant = findVariant(
+            product,
+            item.variantName,
+            item.variantCode,
+          );
+        } catch (_) {
+          variant = null;
+        }
+      }
+
+      const allocations = Array.isArray(item.batchAllocations)
+        ? item.batchAllocations
+        : [];
+      const allocatedQty = allocations.reduce(
+        (sum, allocation) => sum + Math.max(0, toNumber(allocation.qty)),
+        0,
+      );
+      const allocatedCost = allocations.reduce(
+        (sum, allocation) =>
+          sum +
+          Math.max(0, toNumber(allocation.qty)) *
+            Math.max(0, toNumber(allocation.unitCost)),
+        0,
+      );
+
+      let unitCost = null;
+      let costSource = "missing";
+
+      if (qty > 0 && allocatedQty >= qty && allocatedCost > 0) {
+        unitCost = allocatedCost / allocatedQty;
+        costSource = "fifo";
+      } else if (item.unitCost !== null && item.unitCost !== undefined &&
+                 toNumber(item.unitCost) > 0) {
+        unitCost = toNumber(item.unitCost);
+        costSource = "order_snapshot";
+      } else if (toNumber(variant?.unitCost) > 0) {
+        unitCost = toNumber(variant.unitCost);
+        costSource = "product_unit_cost";
+      } else if (toNumber(variant?.defaultPrice) > 0) {
+        unitCost = toNumber(variant.defaultPrice);
+        costSource = "product_default_price";
+      } else if (!variant && !item.variantCode && !item.variantName &&
+                 toNumber(product?.unitCost) > 0) {
+        unitCost = toNumber(product.unitCost);
+        costSource = "product_unit_cost";
+      }
+
+      const totalCostCny =
+        unitCost !== null ? unitCost * qty : 0;
+
+      if (unitCost === null && qty > 0) hasCostData = false;
+      orderCostCny += totalCostCny;
+
+      return {
+        ...item,
+        unitCost,
+        totalCostCny,
+        costSource,
+        hasCost: unitCost !== null,
+      };
+    });
+
+    return {
+      ...order,
+      items,
+      totalCostCny: orderCostCny,
+      hasCostData,
+    };
+  });
+};
+
 const getProductPrice = (product, variantName = "", variantCode = "") => {
   const name = normalizeVariantName(variantName);
   const code = normalizeVariantCode(variantCode);
