@@ -183,6 +183,26 @@ exports.getProductDetail = async (req, res) => {
 };
 
 // =====================================================
+// KIỂM TRA QUYỀN CHỈNH SỬA SẢN PHẨM / SKU ĐƯỢC CHỌN
+// POST /api/shopee/management/products/check-editable
+// =====================================================
+exports.checkProductsEditable = async (req, res) => {
+  try {
+    const shopId = getShopId(req);
+    if (!shopId) return res.status(400).json({ success: false, message: "Vui lòng chọn shop Shopee." });
+    const result = await service.checkShopeeProductEditability(shopId, req.body.itemIds);
+    return res.json({
+      success: true,
+      message: "Đã kiểm tra trạng thái chỉnh sửa trên Shopee.",
+      data: result,
+      note: "Đây là bước sàng lọc theo trạng thái sản phẩm và phân loại. Shopee vẫn có thể từ chối khi ghi do khuyến mãi, hạn chế kho hoặc quyền riêng.",
+    });
+  } catch (error) {
+    return sendError(res, error, 400);
+  }
+};
+
+// =====================================================
 // 3. CẬP NHẬT THÔNG TIN CƠ BẢN
 // PUT /api/shopee/management/products/:itemId
 // =====================================================
