@@ -155,8 +155,13 @@ exports.downloadDocuments = async (req, res) => {
       },
       responseType: "arraybuffer",
     });
+    const contentType = String(raw.headers?.["content-type"] || "application/pdf");
+    if (contentType.includes("application/json")) {
+      const payload = JSON.parse(Buffer.from(raw.data).toString("utf8"));
+      throw new Error(payload?.message || payload?.msg || payload?.error || "Shopee chưa trả về file vận đơn.");
+    }
     const buffer = Buffer.from(raw.data);
-    res.setHeader("Content-Type", raw.headers?.["content-type"] || "application/pdf");
+    res.setHeader("Content-Type", contentType);
     res.setHeader("Content-Disposition", 'inline; filename="shopee-waybills.pdf"');
     res.setHeader("Content-Length", buffer.length);
     return res.status(200).send(buffer);
