@@ -1195,17 +1195,7 @@ async function resolveShopeeReturn({
                   batch.remainingQty = beforeBatchQty - deductedBatchQty;
                   batch.isActive = batch.remainingQty > 0;
                   await batch.save({ session });
-                  allocations.push({
-                    productId: product._id,
-                    variantCode: orderItem.variantCode,
-                    variantName: orderItem.variantName || "",
-                    batchId: batch._id,
-                    batchCode: batch.batchCode || "",
-                    qty: deductedBatchQty,
-                    unitCost: number(batch.unitCost),
-                    beforeQty: beforeBatchQty,
-                    afterQty: number(batch.remainingQty),
-                  });
+
                   remainingDamaged -= deductedBatchQty;
                 }
 
@@ -1257,7 +1247,7 @@ async function resolveShopeeReturn({
           0,
         );
         orderDoc.returnReceived = doc.items.every(
-          (item) => number(item.receivedQty) >= 0,
+          (item) => number(item.receivedQty) >= number(item.requestedQty),
         );
         orderDoc.stockReturnedAt = new Date();
         await orderDoc.save({ session });
