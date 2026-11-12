@@ -1121,6 +1121,26 @@ async function resolveShopeeReturn({
             0,
             number(orderItem.deductedQty) - number(orderItem.returnedQty),
           );
+          const reservedRemaining = Math.max(0, number(orderItem.reservedQty));
+
+          if (
+            doc.returnType === CUSTOMER_RETURN &&
+            receivedQty > deductedRemaining
+          ) {
+            throw new Error(
+              "Số lượng khách trả vượt số lượng đơn đã thực sự xuất kho còn có thể hoàn: " + returnItem.itemName,
+            );
+          }
+
+          if (
+            doc.returnType === DELIVERY_FAILED &&
+            receivedQty > reservedRemaining + deductedRemaining
+          ) {
+            throw new Error(
+              "Số lượng kiện giao thất bại nhận về vượt tổng số lượng đang giữ và đã xuất còn có thể đối chiếu: " + returnItem.itemName,
+            );
+          }
+
           let restockableReceivedQty = receivedQty;
 
           // For failed delivery, reserved stock is already physically in
@@ -1129,7 +1149,7 @@ async function resolveShopeeReturn({
           if (doc.returnType === DELIVERY_FAILED) {
             const releaseQty = Math.min(
               receivedQty,
-              Math.max(0, number(orderItem.reservedQty)),
+              reservedRemaining,
             );
 
             if (releaseQty > 0) {
