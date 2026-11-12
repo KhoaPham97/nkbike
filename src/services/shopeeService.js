@@ -1131,6 +1131,75 @@ async function getShopeeEscrowDetailBatch(shopId, orderSnList = []) {
 // 13. EXPORT
 // =====================================================
 
+
+
+// =====================================================
+// SHOPEE CHAT API (manual customer service)
+// =====================================================
+async function getShopeeChatConversations(shopId, { direction = "latest", type = "all", pageSize = 40, nextTimestampNano } = {}) {
+  const params = {
+    direction,
+    type,
+    page_size: Math.min(Math.max(Number(pageSize) || 40, 1), 100),
+  };
+  if (nextTimestampNano) params.next_timestamp_nano = String(nextTimestampNano);
+  const data = await callShopeeShopApi({
+    shopId,
+    path: "/api/v2/sellerchat/get_conversation_list",
+    method: "GET",
+    params,
+  });
+  return data.response || data;
+}
+
+async function getShopeeChatMessages(shopId, { conversationId, offset = "0", pageSize = 50 } = {}) {
+  if (!conversationId) throw new Error("Thiếu conversationId.");
+  const data = await callShopeeShopApi({
+    shopId,
+    path: "/api/v2/sellerchat/get_message_list",
+    method: "GET",
+    params: {
+      conversation_id: String(conversationId),
+      offset: String(offset || "0"),
+      page_size: Math.min(Math.max(Number(pageSize) || 50, 1), 100),
+    },
+  });
+  return data.response || data;
+}
+
+async function sendShopeeChatMessage(shopId, { toId, text } = {}) {
+  const message = String(text || "").trim();
+  if (!toId || !message) throw new Error("Thiếu người nhận hoặc nội dung tin nhắn.");
+  if (message.length > 5000) throw new Error("Tin nhắn vượt quá 5.000 ký tự.");
+  const data = await callShopeeShopApi({
+    shopId,
+    path: "/api/v2/sellerchat/send_message",
+    method: "POST",
+    body: {
+      to_id: Number(toId),
+      message_type: "text",
+      content: { text: message },
+    },
+  });
+  return data.response || data;
+}
+
+async function readShopeeChatConversation(shopId, { conversationId, lastReadMessageId } = {}) {
+  if (!conversationId || !lastReadMessageId) {
+    throw new Error("Thiếu conversationId hoặc lastReadMessageId.");
+  }
+  const data = await callShopeeShopApi({
+    shopId,
+    path: "/api/v2/sellerchat/read_conversation",
+    method: "POST",
+    body: {
+      conversation_id: String(conversationId),
+      last_read_message_id: String(lastReadMessageId),
+    },
+  });
+  return data.response || data;
+}
+
 module.exports = {
   getShopeeAuthUrl,
   handleShopeeCallback,
