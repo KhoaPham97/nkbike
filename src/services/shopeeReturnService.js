@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const crypto = require("crypto");
 
 const ShopeeReturn = require("../models/ShopeeReturn");
+const ShopeeOrder = require("../models/ShopeeOrder");
 const ShopeeSkuMapping = require("../models/ShopeeSkuMapping");
 const ShopeeStockTransaction = require("../models/ShopeeStockTransaction");
 const InventoryBatch = require("../models/InventoryBatch");
@@ -1077,6 +1078,82 @@ async function resolveShopeeReturn({
 
       let totalRestockedQty = 0;
 
+      // Limit returned quantities to units actually deducted from the order.
+      // For failed delivery orders that were only reserved, release the
+      // reservation instead of adding the still-existing stock a second time.
+      const restockLimitByItem = new Map();
+      const orderDoc = await ShopeeOrder.findOne({
+        shopId: String(shopId),
+        orderSn: doc.orderSn,
+      }).session(session);
+
+      if (orderDoc) {
+        for (const returnItem of doc.items) {
+          const orderItem = (orderDoc.items || []).find(
+            (row) =>
+              text(row.itemId) === text(returnItem.itemId) &&
+              text(row.modelId || "0") === text(returnItem.modelId || "0"),
+          );
+
+          if (!orderItem) {
+            restockLimitByItem.set(String(returnItem._id), 0);
+            continue;
+          }
+
+          const receivedQty = Math.max(0, number(returnItem.receivedQty));
+          const deductedRemaining = Math.max(
+            0,
+            number(orderItem.deductedQty) - number(orderItem.returnedQty),
+          );
+
+          if (deductedRemaining > 0) {
+            const acceptedReturnQty = Math.min(receivedQty, deductedRemaining);
+            orderItem.returnedQty = number(orderItem.returnedQty) + acceptedReturnQty;
+            restockLimitByItem.set(
+              String(returnItem._id),
+              Math.min(number(returnItem.goodQty), acceptedReturnQty),
+            );
+          } else {
+            restockLimitByItem.set(String(returnItem._id), 0);
+
+            if (
+              doc.returnType === DELIVERY_FAILED &&
+              number(orderItem.reservedQty) > 0 &&
+              receivedQty > 0 &&
+              orderItem.productId &&
+              text(orderItem.variantCode)
+            ) {
+              const releaseQty = Math.min(receivedQty, number(orderItem.reservedQty));
+              const product = await Product.findById(orderItem.productId).session(session);
+              if (!product) {
+                throw new Error("Không tìm thấy sản phẩm để giải phóng hàng giữ: " + orderItem.itemName);
+              }
+              const variant = (product.variants || []).find(
+                (row) => text(row.variantCode) === text(orderItem.variantCode),
+              );
+              if (!variant) {
+                throw new Error("Không tìm thấy phân loại để giải phóng hàng giữ: " + orderItem.variantName);
+              }
+              const currentReserved = number(variant.reservedQty);
+              if (currentReserved < releaseQty) {
+                throw new Error("Số lượng đang giữ không đủ để giải phóng: " + orderItem.variantName);
+              }
+              variant.reservedQty = currentReserved - releaseQty;
+              orderItem.reservedQty = number(orderItem.reservedQty) - releaseQty;
+              await product.save({ session });
+            }
+          }
+        }
+
+        orderDoc.returnedQty = (orderDoc.items || []).reduce(
+          (sum, item) => sum + number(item.returnedQty),
+          0,
+        );
+        orderDoc.returnReceived = true;
+        orderDoc.stockReturnedAt = new Date();
+        await orderDoc.save({ session });
+      }
+
       // =============================================
       // RESTOCK
       // =============================================
@@ -1085,9 +1162,12 @@ async function resolveShopeeReturn({
         for (let index = 0; index < doc.items.length; index += 1) {
           const item = doc.items[index];
 
-          const qty = number(item.goodQty);
+          const requestedGoodQty = number(item.goodQty);
+          const qty = restockLimitByItem.has(String(item._id))
+            ? Math.min(requestedGoodQty, number(restockLimitByItem.get(String(item._id))))
+            : requestedGoodQty;
 
-          // Chỉ nhập hàng tốt.
+          // Chỉ nhập hàng tốt và không vượt quá số lượng đơn đã xuất kho.
           if (qty <= 0) {
             item.restockedQty = 0;
             continue;
