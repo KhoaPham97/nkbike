@@ -2,6 +2,8 @@ const mongoose = require("mongoose");
 
 const ShopeeShop = require("../models/ShopeeShop");
 const ShopeeOrder = require("../models/ShopeeOrder");
+const ShopeeStockTransaction = require("../models/ShopeeStockTransaction");
+const { Product } = require("../models/products");
 
 const {
   syncAllShopeeOrders,
@@ -40,6 +42,117 @@ const buildPagination = (page, limit) => {
     limit: currentLimit,
     skip: (currentPage - 1) * currentLimit,
   };
+};
+
+// =====================================================
+// ENRICH ORDER ITEMS WITH COST (FIFO actual / unitCost estimate)
+// =====================================================
+const enrichOrdersWithCost = async (orders = []) => {
+  if (!orders.length) return orders;
+
+  const orderSns = orders.map((order) => String(order.orderSn || "")).filter(Boolean);
+  const shopIds = [...new Set(orders.map((order) => String(order.shopId || "")))];
+  const productIds = [
+    ...new Set(
+      orders.flatMap((order) => (order.items || []).map((item) => String(item.productId || "")))
+        .filter((id) => mongoose.isValidObjectId(id)),
+    ),
+  ];
+
+  const [transactions, products] = await Promise.all([
+    ShopeeStockTransaction.find({
+      shopId: { $in: shopIds },
+      orderSn: { $in: orderSns },
+      kind: { $in: ["order_export", "return_import"] },
+      status: "completed",
+    }).lean(),
+    productIds.length
+      ? Product.find({ _id: { $in: productIds } })
+          .select("_id title code variants")
+          .lean()
+      : [],
+  ]);
+
+  const productMap = new Map(products.map((product) => [String(product._id), product]));
+  const transactionMap = new Map();
+
+  for (const transaction of transactions) {
+    const orderKey = `${transaction.shopId}:${transaction.orderSn}`;
+    if (!transactionMap.has(orderKey)) transactionMap.set(orderKey, []);
+    transactionMap.get(orderKey).push(transaction);
+  }
+
+  return orders.map((order) => {
+    const orderTransactions = transactionMap.get(`${order.shopId}:${order.orderSn}`) || [];
+    const items = (order.items || []).map((item) => {
+      const productId = String(item.productId || "");
+      const variantCode = String(item.variantCode || "").trim();
+      const product = productMap.get(productId);
+      const variant = (product?.variants || []).find(
+        (entry) => String(entry.variantCode || "").trim() === variantCode,
+      );
+      const requiredQty = Math.max(0, toNumber(item.quantity, 0)) *
+        Math.max(1, toNumber(item.quantityMultiplier, 1));
+
+      let fifoCost = 0;
+      let fifoQty = 0;
+      let returnedCost = 0;
+      let returnedQty = 0;
+
+      for (const transaction of orderTransactions) {
+        for (const allocation of transaction.allocations || []) {
+          if (
+            String(allocation.productId || "") !== productId ||
+            String(allocation.variantCode || "").trim() !== variantCode
+          ) continue;
+
+          const qty = Math.max(0, toNumber(allocation.qty));
+          const amount = qty * Math.max(0, toNumber(allocation.unitCost));
+          if (transaction.kind === "order_export") {
+            fifoQty += qty;
+            fifoCost += amount;
+          } else if (transaction.kind === "return_import") {
+            returnedQty += qty;
+            returnedCost += amount;
+          }
+        }
+      }
+
+      const netFifoQty = Math.max(0, fifoQty - returnedQty);
+      const netFifoCost = Math.max(0, fifoCost - returnedCost);
+      const fallbackUnitCost = Math.max(0, toNumber(variant?.unitCost));
+      const missingQty = Math.max(0, requiredQty - netFifoQty);
+      const estimatedCost = missingQty * fallbackUnitCost;
+      const totalCostCny = netFifoCost + estimatedCost;
+      const unitCostCny = requiredQty > 0 ? totalCostCny / requiredQty : 0;
+
+      let costSource = "missing";
+      if (netFifoQty >= requiredQty && requiredQty > 0) costSource = "FIFO";
+      else if (netFifoQty > 0 && fallbackUnitCost > 0) costSource = "FIFO + unitCost ước tính";
+      else if (netFifoQty > 0) costSource = "FIFO (thiếu dữ liệu hoàn)";
+      else if (fallbackUnitCost > 0) costSource = "unitCost ước tính";
+
+      return {
+        ...item,
+        productTitle: product?.title || "",
+        productCode: product?.code || "",
+        requiredQty,
+        unitCostCny,
+        totalCostCny,
+        fifoCostCny: netFifoCost,
+        fifoQty: netFifoQty,
+        costSource,
+        hasCost: totalCostCny > 0,
+      };
+    });
+
+    return {
+      ...order,
+      items,
+      totalCostCny: items.reduce((sum, item) => sum + toNumber(item.totalCostCny), 0),
+      hasCostData: items.length > 0 && items.every((item) => item.hasCost),
+    };
+  });
 };
 
 // =====================================================
@@ -257,11 +370,12 @@ const getOrdersAsync = async (req, res) => {
       ShopeeOrder.countDocuments(filter),
     ]);
 
+    const enrichedOrders = await enrichOrdersWithCost(orders);
     const totalPages = Math.max(Math.ceil(total / pagination.limit), 1);
 
     return res.status(200).json({
       success: true,
-      orders,
+      orders: enrichedOrders,
       pagination: {
         total,
         page: pagination.page,
@@ -319,9 +433,11 @@ const getOrderDetailAsync = async (req, res) => {
       });
     }
 
+    const [enrichedOrder] = await enrichOrdersWithCost([order]);
+
     return res.status(200).json({
       success: true,
-      order,
+      order: enrichedOrder || order,
     });
   } catch (error) {
     console.error("getOrderDetailAsync:", error);
