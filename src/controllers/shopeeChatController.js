@@ -73,13 +73,20 @@ exports.getConversations = async (req, res) => {
       const conversationId = text(item.conversation_id || item.conversationId);
       if (!conversationId) continue;
       const buyer = getBuyer(item);
-      const last = item.latest_message_content || item.last_message || item.lastMessage || {};
-      const timestamp = item.last_message_timestamp || item.last_message_time || last.created_timestamp || item.lastMessageTime;
-      const lastSenderId = text(last.from_id || last.fromId || last.sender_id || last.from_user_id);
-      const lastSenderShopId = text(last.from_shop_id || last.fromShopId);
-      const lastMessageFromBuyer = lastSenderShopId
-        ? lastSenderShopId !== shopId
-        : Boolean(lastSenderId && lastSenderId !== shopId);
+      // Shopee v2 trả phần nội dung cuối và metadata người gửi ở các field riêng.
+      // latest_message_content chỉ chứa nội dung (ví dụ { text }), không có from_id.
+      const latestContent = item.latest_message_content || item.last_message?.content || item.lastMessage?.content || {};
+      const last = {
+        ...latestContent,
+        message_id: item.latest_message_id || item.last_message?.message_id || "",
+        message_type: item.latest_message_type || item.last_message?.message_type || "text",
+        from_id: item.latest_message_from_id ?? item.last_message?.from_id ?? "",
+        content: latestContent,
+      };
+      const timestamp = item.last_message_timestamp || item.last_message_time || item.last_message?.created_timestamp || item.lastMessageTime;
+      const lastSenderId = text(item.latest_message_from_id ?? last.from_id ?? last.fromId ?? last.sender_id);
+      // Trong conversation list, to_id là buyer user_id; latest_message_from_id là user_id người gửi.
+      const lastMessageFromBuyer = Boolean(lastSenderId && buyer.buyerId && lastSenderId === buyer.buyerId);
       const update = {
         shopId,
         conversationId,
@@ -105,7 +112,8 @@ exports.getConversations = async (req, res) => {
       conversations: normalized,
       total: normalized.length,
       more: Boolean(pageResult.more),
-      nextCursor: pageResult.next_cursor || null,
+      nextCursor: pageResult.next_cursor?.next_message_time_nano || pageResult.next_cursor || null,
+      nextConversationId: pageResult.next_cursor?.conversation_id || null,
       syncedAt: new Date(),
     });
   } catch (error) {
