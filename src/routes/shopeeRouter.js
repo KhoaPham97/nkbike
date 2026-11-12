@@ -6,6 +6,7 @@ const { auth, adminOnly } = require("../middlewares/auth");
 const shopeeController = require("../controllers/shopeeController");
 const shopeeOrderController = require("../controllers/shopeeOrderController");
 const shopeePrintController = require("../controllers/shopeePrintController");
+const shopeeOfficialPrintController = require("../controllers/shopeeOfficialPrintController");
 const shopeeStockController = require("../controllers/shopeeStockController");
 const shopeeAutoStockController = require("../controllers/shopeeAutoStockController");
 const shopeeRevenueController = require("../controllers/shopeeRevenueController");
@@ -54,6 +55,18 @@ router.post(
   ...adminAuth,
   shopeePrintController.getSelfDesignWaybillDataAsync,
 );
+
+// Lấy loại vận đơn Shopee hỗ trợ cho các kiện đã chọn.
+router.post("/waybills/parameters", ...adminAuth, shopeeOfficialPrintController.getParameters);
+
+// Yêu cầu Shopee tạo file vận đơn gốc (tối đa 50 kiện).
+router.post("/waybills/create", ...adminAuth, shopeeOfficialPrintController.createDocuments);
+
+// Kiểm tra trạng thái tạo file vận đơn.
+router.post("/waybills/result", ...adminAuth, shopeeOfficialPrintController.getResult);
+
+// Tải PDF vận đơn gốc do Shopee trả về.
+router.post("/waybills/download", ...adminAuth, shopeeOfficialPrintController.downloadDocuments);
 
 router.get(
   "/orders/:orderSn",
