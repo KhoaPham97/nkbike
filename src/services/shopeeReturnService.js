@@ -938,9 +938,9 @@ async function inspectShopeeReturn({
           throw new Error("Số lượng kiểm tra phải là số nguyên không âm.");
         }
 
-        if (goodQty + damagedQty > receivedQty) {
+        if (goodQty + damagedQty !== receivedQty) {
           throw new Error(
-            "Số lượng hàng tốt + hàng hỏng không được vượt số lượng thực nhận.",
+            "Phải phân loại đủ toàn bộ số lượng thực nhận thành hàng tốt hoặc hàng hỏng.",
           );
         }
 
