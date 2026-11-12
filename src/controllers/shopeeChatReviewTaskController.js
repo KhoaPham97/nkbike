@@ -8,6 +8,7 @@ const SHOP_DISPLAY_NAME = "xediennhatkhang Wavlink VN Local";
 const maskAddress = (value) => {
   const address = clean(value);
   if (!address) return "địa chỉ đã đăng ký trên Shopee";
+  if (address.startsWith("*")) return address;
   const firstSpace = address.indexOf(" ");
   return firstSpace > 0 ? `******${address.slice(firstSpace)}` : `****** ${address}`;
 };
