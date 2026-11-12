@@ -1,4 +1,5 @@
 const ShopeeReviewTemplate = require("../models/ShopeeReviewTemplate");
+const ShopeeReview = require("../models/ShopeeReview");
 
 const {
   getShopeeReviews,
@@ -52,6 +53,32 @@ async function getReviews(req, res) {
       cursor,
       itemId,
     });
+
+    // Cache đánh giá đã đồng bộ để Shopee Chat tạo nhiệm vụ nhân viên kiểm tra.
+    for (const review of result.reviews || []) {
+      if (!review.commentId) continue;
+      await ShopeeReview.findOneAndUpdate(
+        { shopId: String(shopId), commentId: String(review.commentId) },
+        { $set: {
+          shopId: String(shopId),
+          commentId: String(review.commentId),
+          orderSn: String(review.orderSn || ""),
+          itemId: String(review.itemId || ""),
+          modelId: String(review.modelId || ""),
+          customerName: String(review.customerName || ""),
+          customerUsername: String(review.customerName || ""),
+          rating: Number(review.rating || 0),
+          content: String(review.content || ""),
+          images: Array.isArray(review.images) ? review.images : [],
+          videos: Array.isArray(review.videos) ? review.videos : [],
+          reviewCreatedAt: review.createdAt || null,
+          shopeeReply: String(review.shopeeReply || ""),
+          shopeeRepliedAt: review.repliedAt || null,
+          lastSyncedAt: new Date(),
+        } },
+        { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true },
+      );
+    }
 
     return res.json({
       success: true,
