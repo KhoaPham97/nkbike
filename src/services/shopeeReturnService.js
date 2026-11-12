@@ -938,9 +938,9 @@ async function inspectShopeeReturn({
           throw new Error("Số lượng kiểm tra phải là số nguyên không âm.");
         }
 
-        if (goodQty + damagedQty > receivedQty) {
+        if (goodQty + damagedQty !== receivedQty) {
           throw new Error(
-            "Số lượng hàng tốt + hàng hỏng không được vượt số lượng thực nhận.",
+            "Phải phân loại đủ toàn bộ số lượng thực nhận thành hàng tốt hoặc hàng hỏng.",
           );
         }
 
@@ -1121,6 +1121,26 @@ async function resolveShopeeReturn({
             0,
             number(orderItem.deductedQty) - number(orderItem.returnedQty),
           );
+          const reservedRemaining = Math.max(0, number(orderItem.reservedQty));
+
+          if (
+            doc.returnType === CUSTOMER_RETURN &&
+            receivedQty > deductedRemaining
+          ) {
+            throw new Error(
+              "Số lượng khách trả vượt số lượng đơn đã thực sự xuất kho còn có thể hoàn: " + returnItem.itemName,
+            );
+          }
+
+          if (
+            doc.returnType === DELIVERY_FAILED &&
+            receivedQty > reservedRemaining + deductedRemaining
+          ) {
+            throw new Error(
+              "Số lượng kiện giao thất bại nhận về vượt tổng số lượng đang giữ và đã xuất còn có thể đối chiếu: " + returnItem.itemName,
+            );
+          }
+
           let restockableReceivedQty = receivedQty;
 
           // For failed delivery, reserved stock is already physically in
@@ -1129,7 +1149,7 @@ async function resolveShopeeReturn({
           if (doc.returnType === DELIVERY_FAILED) {
             const releaseQty = Math.min(
               receivedQty,
-              Math.max(0, number(orderItem.reservedQty)),
+              reservedRemaining,
             );
 
             if (releaseQty > 0) {
@@ -1158,6 +1178,74 @@ async function resolveShopeeReturn({
 
               variant.reservedQty = currentReserved - releaseQty;
               orderItem.reservedQty = Math.max(0, number(orderItem.reservedQty) - releaseQty);
+
+              // A failed-delivery package was not deducted from physical
+              // stock. Damaged units must therefore be written off rather
+              // than silently becoming sellable when the reservation clears.
+              const damagedReservedQty = Math.min(
+                number(returnItem.damagedQty),
+                releaseQty,
+              );
+
+              if (damagedReservedQty > 0) {
+                const batches = await InventoryBatch.find({
+                  productId: product._id,
+                  variantCode: orderItem.variantCode,
+                  remainingQty: { $gt: 0 },
+                  isActive: true,
+                })
+                  .sort({ importDate: 1, _id: 1 })
+                  .session(session);
+
+                const batchAvailable = batches.reduce(
+                  (sum, batch) => sum + number(batch.remainingQty),
+                  0,
+                );
+                if (batchAvailable < damagedReservedQty) {
+                  throw new Error(
+                    "Không đủ số lượng lô tồn để ghi giảm hàng hỏng giao thất bại: " + orderItem.variantName,
+                  );
+                }
+
+                let remainingDamaged = damagedReservedQty;
+                for (const batch of batches) {
+                  if (remainingDamaged <= 0) break;
+                  const beforeBatchQty = number(batch.remainingQty);
+                  const deductedBatchQty = Math.min(beforeBatchQty, remainingDamaged);
+                  batch.remainingQty = beforeBatchQty - deductedBatchQty;
+                  batch.isActive = batch.remainingQty > 0;
+                  await batch.save({ session });
+
+                  remainingDamaged -= deductedBatchQty;
+                }
+
+                const beforeQty = number(variant.qty);
+                variant.qty = Math.max(0, beforeQty - damagedReservedQty);
+                product.qty = Math.max(
+                  0,
+                  number(product.qty) - damagedReservedQty,
+                );
+
+                const history = new InventoryHistory({
+                  type: "export",
+                  referenceType: "shopee_return_damage",
+                  referenceId: doc._id,
+                  referenceCode: doc.returnSn,
+                  productId: product._id,
+                  productTitle: product.title || "",
+                  productCode: product.code || "",
+                  variantName: variant.name || returnItem.variantName || "",
+                  variantCode: orderItem.variantCode,
+                  qty: -damagedReservedQty,
+                  beforeQty,
+                  afterQty: number(variant.qty),
+                  note: "Ghi giảm hàng hỏng từ kiện Shopee giao thất bại " + doc.returnSn,
+                  createdBy: getUserId(user),
+                  created_at: new Date(),
+                });
+                await history.save({ session });
+              }
+
               await product.save({ session });
               restockableReceivedQty = Math.max(0, receivedQty - releaseQty);
             }
@@ -1179,7 +1267,7 @@ async function resolveShopeeReturn({
           0,
         );
         orderDoc.returnReceived = doc.items.every(
-          (item) => number(item.receivedQty) >= 0,
+          (item) => number(item.receivedQty) >= number(item.requestedQty),
         );
         orderDoc.stockReturnedAt = new Date();
         await orderDoc.save({ session });
