@@ -13,6 +13,7 @@ const shopeeRevenueController = require("../controllers/shopeeRevenueController"
 const shopeeProductManagementController = require("../controllers/shopeeProductManagementController");
 const shopeeStockSyncController = require("../controllers/shopeeStockSyncController");
 const shopeeReturnController = require("../controllers/shopeeReturnController");
+const shopeeChatController = require("../controllers/shopeeChatController");
 const adminAuth = [auth, adminOnly];
 
 // =====================================================
@@ -36,6 +37,13 @@ router.delete(
   ...adminAuth,
   shopeeController.disconnectShopeeShop,
 );
+
+
+/* SHOPEE CHAT - requires Chat API permission on the Open Platform app */
+router.get("/chat/conversations", ...adminAuth, shopeeChatController.getConversations);
+router.get("/chat/conversations/:conversationId/messages", ...adminAuth, shopeeChatController.getMessages);
+router.post("/chat/conversations/:conversationId/messages", ...adminAuth, shopeeChatController.sendMessage);
+router.post("/chat/conversations/:conversationId/read", ...adminAuth, shopeeChatController.markRead);
 
 // =====================================================
 // ORDER SYNC
