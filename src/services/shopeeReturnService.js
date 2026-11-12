@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const crypto = require("crypto");
 
 const ShopeeReturn = require("../models/ShopeeReturn");
+const ShopeeOrder = require("../models/ShopeeOrder");
 const ShopeeSkuMapping = require("../models/ShopeeSkuMapping");
 const ShopeeStockTransaction = require("../models/ShopeeStockTransaction");
 const InventoryBatch = require("../models/InventoryBatch");
@@ -1077,6 +1078,113 @@ async function resolveShopeeReturn({
 
       let totalRestockedQty = 0;
 
+      // Limit returned quantities to units actually deducted from the order.
+      // For failed delivery orders that were only reserved, release the
+      // reservation instead of adding the still-existing stock a second time.
+      const restockLimitByItem = new Map();
+      const orderDoc = await ShopeeOrder.findOne({
+        shopId: String(shopId),
+        orderSn: doc.orderSn,
+      }).session(session);
+
+      // Failed-delivery packages must reconcile the original order so that
+      // held quantities can be released even when the user chooses NO_RESTOCK.
+      if (
+        !orderDoc &&
+        (choice === "RESTOCK" || doc.returnType === DELIVERY_FAILED)
+      ) {
+        throw new Error(
+          "Không tìm thấy đơn Shopee gốc để đối chiếu tồn kho. Vui lòng đồng bộ đơn hàng trước khi xử lý phiếu hoàn.",
+        );
+      }
+
+      if (orderDoc) {
+        for (const returnItem of doc.items) {
+          const orderItem = (orderDoc.items || []).find(
+            (row) =>
+              text(row.itemId) === text(returnItem.itemId) &&
+              text(row.modelId || "0") === text(returnItem.modelId || "0"),
+          );
+
+          if (!orderItem) {
+            if (choice === "RESTOCK" || doc.returnType === DELIVERY_FAILED) {
+              throw new Error(
+                "Không đối chiếu được sản phẩm hoàn với dòng hàng trong đơn Shopee. Vui lòng kiểm tra SKU mapping trước khi xử lý.",
+              );
+            }
+            restockLimitByItem.set(String(returnItem._id), 0);
+            continue;
+          }
+
+          const receivedQty = Math.max(0, number(returnItem.receivedQty));
+          const deductedRemaining = Math.max(
+            0,
+            number(orderItem.deductedQty) - number(orderItem.returnedQty),
+          );
+          let restockableReceivedQty = receivedQty;
+
+          // For failed delivery, reserved stock is already physically in
+          // inventory. Release its reservation first; only the remaining
+          // received units can be restored as returned stock.
+          if (doc.returnType === DELIVERY_FAILED) {
+            const releaseQty = Math.min(
+              receivedQty,
+              Math.max(0, number(orderItem.reservedQty)),
+            );
+
+            if (releaseQty > 0) {
+              if (!orderItem.productId || !text(orderItem.variantCode)) {
+                throw new Error(
+                  "Đơn giao thất bại chưa ánh xạ sản phẩm kho, không thể giải phóng hàng đang giữ.",
+                );
+              }
+
+              const product = await Product.findById(orderItem.productId).session(session);
+              if (!product) {
+                throw new Error("Không tìm thấy sản phẩm để giải phóng hàng giữ: " + orderItem.itemName);
+              }
+
+              const variant = (product.variants || []).find(
+                (row) => text(row.variantCode) === text(orderItem.variantCode),
+              );
+              if (!variant) {
+                throw new Error("Không tìm thấy phân loại để giải phóng hàng giữ: " + orderItem.variantName);
+              }
+
+              const currentReserved = number(variant.reservedQty);
+              if (currentReserved < releaseQty) {
+                throw new Error("Số lượng đang giữ không đủ để giải phóng: " + orderItem.variantName);
+              }
+
+              variant.reservedQty = currentReserved - releaseQty;
+              orderItem.reservedQty = Math.max(0, number(orderItem.reservedQty) - releaseQty);
+              await product.save({ session });
+              restockableReceivedQty = Math.max(0, receivedQty - releaseQty);
+            }
+          }
+
+          const acceptedReturnQty = Math.min(
+            restockableReceivedQty,
+            deductedRemaining,
+          );
+          orderItem.returnedQty = number(orderItem.returnedQty) + acceptedReturnQty;
+          restockLimitByItem.set(
+            String(returnItem._id),
+            Math.min(number(returnItem.goodQty), acceptedReturnQty),
+          );
+        }
+
+        orderDoc.returnedQty = (orderDoc.items || []).reduce(
+          (sum, item) => sum + number(item.returnedQty),
+          0,
+        );
+        orderDoc.returnReceived = doc.items.every(
+          (item) => number(item.receivedQty) >= 0,
+        );
+        orderDoc.stockReturnedAt = new Date();
+        await orderDoc.save({ session });
+      }
+
       // =============================================
       // RESTOCK
       // =============================================
@@ -1085,9 +1193,12 @@ async function resolveShopeeReturn({
         for (let index = 0; index < doc.items.length; index += 1) {
           const item = doc.items[index];
 
-          const qty = number(item.goodQty);
+          const requestedGoodQty = number(item.goodQty);
+          const qty = restockLimitByItem.has(String(item._id))
+            ? Math.min(requestedGoodQty, number(restockLimitByItem.get(String(item._id))))
+            : requestedGoodQty;
 
-          // Chỉ nhập hàng tốt.
+          // Chỉ nhập hàng tốt và không vượt quá số lượng đơn đã xuất kho.
           if (qty <= 0) {
             item.restockedQty = 0;
             continue;
