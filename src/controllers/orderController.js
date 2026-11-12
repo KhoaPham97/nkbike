@@ -1482,9 +1482,11 @@ const getOrderByIdAsync = async (req, res) => {
       });
     }
 
+    const [enrichedOrder] = await enrichOrdersWithCost([order]);
+
     return res.status(200).json({
       success: true,
-      order,
+      order: enrichedOrder,
     });
   } catch (error) {
     console.error("getOrderByIdAsync:", error);
@@ -1596,9 +1598,11 @@ const listOrdersAsync = async (req, res) => {
       Order.countDocuments(filter),
     ]);
 
+    const enrichedOrders = await enrichOrdersWithCost(orders);
+
     return res.status(200).json({
       success: true,
-      orders,
+      orders: enrichedOrders,
       total,
       page,
       limit,
