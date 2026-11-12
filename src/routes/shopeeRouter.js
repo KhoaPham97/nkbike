@@ -14,6 +14,7 @@ const shopeeProductManagementController = require("../controllers/shopeeProductM
 const shopeeStockSyncController = require("../controllers/shopeeStockSyncController");
 const shopeeReturnController = require("../controllers/shopeeReturnController");
 const shopeeChatController = require("../controllers/shopeeChatController");
+const shopeeChatReviewTaskController = require("../controllers/shopeeChatReviewTaskController");
 const adminAuth = [auth, adminOnly];
 
 // =====================================================
@@ -44,6 +45,8 @@ router.get("/chat/conversations", ...adminAuth, shopeeChatController.getConversa
 router.get("/chat/conversations/:conversationId/messages", ...adminAuth, shopeeChatController.getMessages);
 router.post("/chat/conversations/:conversationId/messages", ...adminAuth, shopeeChatController.sendMessage);
 router.post("/chat/conversations/:conversationId/read", ...adminAuth, shopeeChatController.markRead);
+router.get("/chat/review-tasks", ...adminAuth, shopeeChatReviewTaskController.getReviewTasks);
+router.patch("/chat/review-tasks/:taskId", ...adminAuth, shopeeChatReviewTaskController.updateReviewTask);
 
 // =====================================================
 // ORDER SYNC
