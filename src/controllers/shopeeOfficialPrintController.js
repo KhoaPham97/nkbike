@@ -38,26 +38,26 @@ async function resolvePackages(shopId, items) {
     const remote = (unwrap(detail).order_list || []).find((x) => clean(x.order_sn) === item.orderSn);
     const packages = Array.isArray(remote?.package_list) ? remote.package_list : [];
     if (!packages.length) throw new Error(`Shopee chưa tạo kiện hàng cho đơn ${item.orderSn}.`);
-    const selected = item.packageNumber
-      ? packages.find((x) => clean(x.package_number) === item.packageNumber)
-      : packages.length === 1 ? packages[0] : null;
-    if (!selected) throw new Error(packages.length > 1
-      ? `Đơn ${item.orderSn} có nhiều kiện; cần chỉ rõ mã kiện.`
-      : `Không tìm thấy kiện của đơn ${item.orderSn}.`);
-    const packageNumber = clean(selected.package_number);
-    const detailPackage = await callShopeeShopApi({
-      shopId, path: "/api/v2/order/get_package_detail", method: "GET",
-      params: { package_number_list: packageNumber },
-    });
-    const packageInfo = (unwrap(detailPackage).package_list || []).find(
-      (x) => clean(x.package_number) === packageNumber,
-    );
-    const trackingNumber = clean(packageInfo?.tracking_number || selected.tracking_number);
-    if (!trackingNumber) throw new Error(`Kiện ${packageNumber} chưa có mã vận đơn.`);
-    result.push({
-      order_sn: item.orderSn, package_number: packageNumber,
-      tracking_number: trackingNumber, shippingDocumentType: item.shippingDocumentType,
-    });
+    const selectedPackages = item.packageNumber
+      ? packages.filter((x) => clean(x.package_number) === item.packageNumber)
+      : packages;
+    if (!selectedPackages.length) throw new Error(`Không tìm thấy kiện của đơn ${item.orderSn}.`);
+    for (const selected of selectedPackages) {
+      const packageNumber = clean(selected.package_number);
+      const detailPackage = await callShopeeShopApi({
+        shopId, path: "/api/v2/order/get_package_detail", method: "GET",
+        params: { package_number_list: packageNumber },
+      });
+      const packageInfo = (unwrap(detailPackage).package_list || []).find(
+        (x) => clean(x.package_number) === packageNumber,
+      );
+      const trackingNumber = clean(packageInfo?.tracking_number || selected.tracking_number);
+      if (!trackingNumber) throw new Error(`Kiện ${packageNumber} chưa có mã vận đơn.`);
+      result.push({
+        order_sn: item.orderSn, package_number: packageNumber,
+        tracking_number: trackingNumber, shippingDocumentType: item.shippingDocumentType,
+      });
+    }
   }
   return result;
 }
