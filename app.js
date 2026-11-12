@@ -8,10 +8,35 @@ dotenv.config();
 
 const app = express();
 
+// Centralized CORS policy for storefront/admin frontends and local development.
+const allowedOrigins = new Set([
+  "https://nk-admin.phamdangkhoa0403.workers.dev",
+  "https://nk-admin.onrender.com",
+  "http://localhost:3000",
+  "http://localhost:5173",
+]);
+
+const corsOptions = {
+  origin(origin, callback) {
+    // Allow non-browser/server-to-server requests that do not send Origin.
+    if (!origin || allowedOrigins.has(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error(`CORS blocked origin: ${origin}`));
+  },
+  credentials: true,
+  methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
+  optionsSuccessStatus: 204,
+  maxAge: 86400,
+};
+
+app.use(cors(corsOptions));
+
 if (process.env.NODE_ENV === "development") {
   app.use(morgan("dev"));
 }
-//let __dirname = path.resolve();
+
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use(express.json({ limit: "50mb" }));
 
@@ -38,12 +63,10 @@ const shopeeInventoryRouter = require("./src/routes/shopeeInventoryRouter");
 const skuRoutes = require("./src/routes/skuRoutes");
 const shopeeReviewRoutes = require("./src/routes/shopeeReviewRoutes");
 
-app.use(cors());
-
 // Connect to MongoDB
 require("./src/db/mongoose");
 
-// connect routes
+// Connect routes
 app.use(authRoute);
 app.use("/api", categoryRoute);
 app.use(productRoute);
@@ -54,7 +77,6 @@ app.use(paypalCheckoutRoute);
 app.use("/api/order", orderRoute);
 app.use("/api/customers", customerRouter);
 app.use("/api/inventory", inventoryRouter);
-// app.use("/api/products/inventory", inventoryRouter);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/admin", adminRoutes);
@@ -66,8 +88,6 @@ app.use("/api/shopee", shopeeRouter);
 app.use("/api/shopee/management", shopeeManagementRouter);
 app.use("/api/shopee/inventory", shopeeInventoryRouter);
 app.use("/api/admin/sku", skuRoutes);
-// REVIEW MANAGEMENT
-// =====================================================
-
 app.use("/api/shopee/reviews", shopeeReviewRoutes);
+
 module.exports = app;
