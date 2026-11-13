@@ -1064,6 +1064,11 @@ const syncOrderStockAsync = async (req, res) => {
           continue;
         }
 
+        // Hỗ trợ đồng bộ các đơn đã hoàn tất nhưng trước đó còn trạng thái giữ hàng.
+        if (order.stockReserved === true) {
+          await releaseOrderStockReservation({ order, session });
+        }
+
         const stockResult = await deductOrderStockFIFO({
           order,
           session,
