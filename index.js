@@ -21,6 +21,7 @@ const socketAllowedOrigins = [
   "https://nk-admin.phamdangkhoa0403.workers.dev",
   "https://nk-admin.onrender.com",
   "http://localhost:3000",
+  "http://localhost:2999",
   "http://localhost:5173",
 ];
 
