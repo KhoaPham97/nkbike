@@ -210,6 +210,19 @@ shopeeReviewSchema.index({
   reviewCreatedAt: -1,
 });
 
+shopeeReviewSchema.index({
+  productId: 1,
+  hidden: 1,
+  reviewCreatedAt: -1,
+});
+
+shopeeReviewSchema.index({
+  shopId: 1,
+  itemId: 1,
+  hidden: 1,
+  reviewCreatedAt: -1,
+});
+
 module.exports =
   mongoose.models.ShopeeReview ||
   mongoose.model("ShopeeReview", shopeeReviewSchema);
