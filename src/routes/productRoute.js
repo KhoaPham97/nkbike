@@ -2,6 +2,7 @@ const express = require("express");
 
 // Product Controller
 const productController = require("../controllers/productController");
+const productReviewController = require("../controllers/productReviewController");
 
 // Auth Middleware
 const optionalAuth = require("../middlewares/optionalAuth");
@@ -30,6 +31,7 @@ router.get(
   optionalAuth,
   productController.listAllProductsAsync,
 );
+router.get("/api/products/:id/reviews", productReviewController.getProductReviews);
 router.get("/api/product/:id", productController.getProductAsync);
 router.get(
   "/api/products/category/:id",
