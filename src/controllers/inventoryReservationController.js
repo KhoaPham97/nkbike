@@ -68,9 +68,11 @@ const makeOrderLine = ({ source, order, item, qty, product }) => {
 
     stockStatus: isShopee
       ? clean(order.stockStatus)
-      : order.stockDeducted
-        ? "deducted"
-        : "not_deducted",
+      : order.stockReserved
+        ? "reserved"
+        : order.stockDeducted
+          ? "deducted"
+          : "not_reserved",
 
     customerName: isShopee
       ? clean(order.recipientName || order.buyerUsername)
@@ -129,7 +131,7 @@ const getReservations = async (req, res) => {
 
       Order.find({
         status: { $in: ACTIVE_WEBSITE_STATUSES },
-        stockDeducted: true,
+        $or: [{ stockReserved: true }, { stockDeducted: true }],
       })
         .select(
           "_id code status customerName customerPhone items created_at updated_at stockDeducted",
@@ -168,6 +170,7 @@ const getReservations = async (req, res) => {
           thumbnail: product.thumbnail || "",
           physicalQty: n(product.qty),
           websiteQty: 0,
+          websiteReservedQty: 0,
           shopeeReservedQty: 0,
           totalOrders: 0,
           variants: new Map(),
@@ -203,6 +206,7 @@ const getReservations = async (req, res) => {
             : 0,
 
           websiteQty: 0,
+          websiteReservedQty: 0,
           shopeeReservedQty: 0,
           orders: [],
         });
@@ -239,6 +243,10 @@ const getReservations = async (req, res) => {
 
           row.websiteQty += qty;
           variant.websiteQty += qty;
+          if (order.stockReserved === true) {
+            row.websiteReservedQty += qty;
+            variant.websiteReservedQty += qty;
+          }
 
           variant.orders.push(
             makeOrderLine({
@@ -328,7 +336,9 @@ const getReservations = async (req, res) => {
           ...variant,
           availableQty: Math.max(
             0,
-            variant.physicalQty - variant.shopeeReservedQty,
+            variant.physicalQty -
+              variant.websiteReservedQty -
+              variant.shopeeReservedQty,
           ),
           totalOrders: orders.length,
           orders,
@@ -347,7 +357,10 @@ const getReservations = async (req, res) => {
 
         // Website đã trừ kho khi tạo đơn.
         // Chỉ Shopee reservedQty mới tiếp tục chiếm tồn vật lý.
-        availableQty: Math.max(0, row.physicalQty - row.shopeeReservedQty),
+        availableQty: Math.max(
+          0,
+          row.physicalQty - row.websiteReservedQty - row.shopeeReservedQty,
+        ),
 
         hasReservation: row.websiteQty > 0 || row.shopeeReservedQty > 0,
       };
@@ -397,6 +410,7 @@ const getReservations = async (req, res) => {
       (result, row) => {
         result.totalProducts += 1;
         result.websiteQty += row.websiteQty;
+        result.websiteReservedQty += row.websiteReservedQty;
         result.shopeeReservedQty += row.shopeeReservedQty;
         result.totalOrders += row.totalOrders;
         return result;
@@ -404,6 +418,7 @@ const getReservations = async (req, res) => {
       {
         totalProducts: 0,
         websiteQty: 0,
+        websiteReservedQty: 0,
         shopeeReservedQty: 0,
         totalOrders: 0,
       },
@@ -528,6 +543,9 @@ async function getReservationsInternal(productId) {
 
       const variant = getOrCreate(item.variantCode, item.variantName);
       variant.websiteQty += qty;
+      if (order.stockReserved === true) {
+        variant.websiteReservedQty += qty;
+      }
 
       variant.orders.push(
         makeOrderLine({
