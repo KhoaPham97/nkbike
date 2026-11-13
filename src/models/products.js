@@ -146,6 +146,9 @@ const productSchema = new mongoose.Schema(
       default: 5,
     },
 
+    shopeeItemId: { type: String, default: "", trim: true, index: true },
+    shopeeShopId: { type: String, default: "", trim: true },
+
     originalPrice: {
       type: String,
       default: "0",
