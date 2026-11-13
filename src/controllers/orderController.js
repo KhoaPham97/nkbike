@@ -1156,6 +1156,7 @@ const createOrderAsync = async (req, res) => {
     const paidNumber = Math.max(0, toNumber(paidAmount));
 
     let createdOrder = null;
+    let reservationResult = null;
 
     await session.withTransaction(async () => {
       let customer = null;
@@ -1332,7 +1333,7 @@ const createOrderAsync = async (req, res) => {
       });
 
       // Giữ hàng ngay khi tạo đơn. Tồn thực tế chưa giảm cho đến khi hoàn tất.
-      await reserveOrderStock({ order, session });
+      reservationResult = await reserveOrderStock({ order, session });
       await order.save({ session });
 
       if (customer) {
@@ -1351,6 +1352,11 @@ const createOrderAsync = async (req, res) => {
       success: true,
       message: "Tạo đơn hàng thành công, hàng đã được giữ và chưa trừ tồn kho",
       order: createdOrder,
+      stock: {
+        reserved: createdOrder?.stockReserved === true,
+        reservedQty: reservationResult?.reservedQty || 0,
+        deducted: createdOrder?.stockDeducted === true,
+      },
     });
   } catch (error) {
     console.error("createOrderAsync:", error);
