@@ -66,6 +66,63 @@ function getVariantName(variant) {
   );
 }
 
+async function syncProductShopeeIdsFromMappings(productIds) {
+  const ids = [...new Set((productIds || []).map(toString).filter(Boolean))];
+  if (!ids.length) {
+    return { updated: 0, skipped: 0, conflicts: [] };
+  }
+
+  const mappings = await ShopeeSkuMapping.find({
+    productId: { $in: ids },
+    isActive: true,
+  })
+    .select("productId shopId itemId")
+    .lean();
+
+  const byProduct = new Map(ids.map((id) => [id, new Map()]));
+  for (const mapping of mappings) {
+    const productId = toString(mapping.productId);
+    const shopId = toString(mapping.shopId);
+    const itemId = toString(mapping.itemId);
+    if (!productId || !shopId || !itemId) continue;
+    const pairKey = `${shopId}:${itemId}`;
+    byProduct.get(productId)?.set(pairKey, { shopId, itemId });
+  }
+
+  const operations = [];
+  const conflicts = [];
+  for (const [productId, pairs] of byProduct.entries()) {
+    if (pairs.size > 1) {
+      conflicts.push({ productId, mappings: [...pairs.values()] });
+      continue;
+    }
+
+    const pair = [...pairs.values()][0] || { shopId: "", itemId: "" };
+    operations.push({
+      updateOne: {
+        filter: { _id: productId },
+        update: {
+          $set: {
+            shopeeShopId: pair.shopId,
+            shopeeItemId: pair.itemId,
+            updated_at: new Date(),
+          },
+        },
+      },
+    });
+  }
+
+  const result = operations.length
+    ? await Product.bulkWrite(operations, { ordered: false })
+    : { modifiedCount: 0 };
+
+  return {
+    updated: Number(result.modifiedCount || 0),
+    skipped: conflicts.length,
+    conflicts,
+  };
+}
+
 function getVariants(product) {
   return Array.isArray(product?.variants) ? product.variants : [];
 }
@@ -533,6 +590,11 @@ exports.createSkuMappingAsync = async (req, res) => {
       updatedBy: userId,
     });
 
+    const productSync = await syncProductShopeeIdsFromMappings([data.productId]);
+    const productSync = await syncProductShopeeIdsFromMappings([
+      currentMapping.productId,
+      data.productId,
+    ]);
     try {
       await backfillShopeeReviewMappings({ shopId: data.shopId });
     } catch (syncError) {
@@ -549,6 +611,7 @@ exports.createSkuMappingAsync = async (req, res) => {
     return res.status(201).json({
       success: true,
       message: "Tạo ánh xạ SKU Shopee thành công.",
+      productSync,
       data: result,
     });
   } catch (error) {
@@ -605,6 +668,7 @@ exports.updateSkuMappingAsync = async (req, res) => {
     return res.json({
       success: true,
       message: "Cập nhật ánh xạ SKU thành công.",
+      productSync,
       data: updated,
     });
   } catch (error) {
@@ -650,9 +714,11 @@ exports.disableSkuMappingAsync = async (req, res) => {
       return sendError(res, 404, "Không tìm thấy ánh xạ SKU.");
     }
 
+    const productSync = await syncProductShopeeIdsFromMappings([mapping.productId]);
     return res.json({
       success: true,
       message: "Đã tắt ánh xạ SKU Shopee.",
+      productSync,
       data: mapping,
     });
   } catch (error) {
@@ -689,9 +755,11 @@ exports.enableSkuMappingAsync = async (req, res) => {
       return sendError(res, 404, "Không tìm thấy ánh xạ SKU.");
     }
 
+    const productSync = await syncProductShopeeIdsFromMappings([mapping.productId]);
     return res.json({
       success: true,
       message: "Đã bật lại ánh xạ SKU Shopee.",
+      productSync,
       data: mapping,
     });
   } catch (error) {
@@ -1101,6 +1169,9 @@ exports.autoMatchSkuMappingsAsync = async (req, res) => {
       }
     }
 
+    const productSync = await syncProductShopeeIdsFromMappings(
+      results.created.map((item) => item.productId),
+    );
     try {
       await backfillShopeeReviewMappings({ shopId });
     } catch (syncError) {
@@ -1111,6 +1182,7 @@ exports.autoMatchSkuMappingsAsync = async (req, res) => {
       success: true,
       message: "Đã hoàn tất tự động ghép SKU Shopee.",
       data: results,
+      productSync,
       summary: {
         totalShopeeProducts: results.totalShopeeProducts,
         totalShopeeSkus: results.totalShopeeSkus,
