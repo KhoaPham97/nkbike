@@ -1,4 +1,5 @@
 const cron = require("node-cron");
+const { isBackgroundJobsEnabled } = require("../utils/backgroundJobs");
 
 const {
   getStockSyncSettings,
@@ -9,6 +10,15 @@ let scheduledTask = null;
 let configuringJob = false;
 
 async function configureShopeeStockSyncJob() {
+  if (!isBackgroundJobsEnabled()) {
+    if (scheduledTask) {
+      scheduledTask.stop();
+      scheduledTask = null;
+    }
+    console.log("[Shopee Stock Sync] Bỏ qua: background jobs đang tắt trên deployment này.");
+    return { success: true, enabled: false, skipped: true, reason: "background_jobs_disabled" };
+  }
+
   if (configuringJob) {
     return {
       success: false,

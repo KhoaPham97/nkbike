@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { isBackgroundJobsEnabled } = require("../utils/backgroundJobs");
 const cron = require("node-cron");
 
 const ShopeeOrder = require("../models/ShopeeOrder");
@@ -514,6 +515,15 @@ async function processOrders({
 // =====================================================
 
 async function configureShopeeAutoStockJob() {
+  if (!isBackgroundJobsEnabled()) {
+    if (scheduledTask) {
+      scheduledTask.stop();
+      scheduledTask = null;
+    }
+    console.log("[Shopee Auto Stock] Bỏ qua: background jobs đang tắt trên deployment này.");
+    return { success: true, enabled: false, skipped: true, reason: "background_jobs_disabled" };
+  }
+
   if (configuringJob) {
     console.log(
       "[Shopee Auto Stock] Đang cấu hình lịch, bỏ qua yêu cầu trùng.",

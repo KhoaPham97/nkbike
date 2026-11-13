@@ -1,4 +1,5 @@
 const cron = require("node-cron");
+const { isBackgroundJobsEnabled } = require("../utils/backgroundJobs");
 const crypto = require("crypto");
 
 const ShopeeShop = require("../models/ShopeeShop");
@@ -1085,6 +1086,15 @@ async function runShopeeAutoReview(options = {}) {
 
 async function scheduleShopeeAutoReview() {
   const setting = await getSetting();
+
+  if (!isBackgroundJobsEnabled()) {
+    if (cronTask) {
+      cronTask.stop();
+      cronTask = null;
+    }
+    console.log("[SHOPEE CRON] Bỏ qua: background jobs đang tắt trên deployment này.");
+    return setting;
+  }
 
   if (cronTask) {
     cronTask.stop();

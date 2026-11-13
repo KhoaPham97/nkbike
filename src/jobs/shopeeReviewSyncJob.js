@@ -1,4 +1,5 @@
 const cron = require("node-cron");
+const { isBackgroundJobsEnabled } = require("../utils/backgroundJobs");
 const ShopeeShop = require("../models/ShopeeShop");
 const { getShopeeItemIds } = require("../services/shopeeService");
 const { getAllShopeeReviews } = require("../services/shopeeReviewService");
@@ -70,6 +71,15 @@ async function executeShopeeReviewSync() {
 }
 
 function startShopeeReviewSyncJob() {
+  if (!isBackgroundJobsEnabled()) {
+    if (task) {
+      task.stop();
+      task = null;
+    }
+    console.log("[SHOPEE REVIEW SYNC] Bỏ qua: background jobs đang tắt trên deployment này.");
+    return false;
+  }
+
   if (task) task.stop();
   task = cron.schedule("0 */6 * * *", () => {
     executeShopeeReviewSync().catch((error) =>

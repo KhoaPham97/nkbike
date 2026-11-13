@@ -1,4 +1,5 @@
 const { syncAllShopeeOrders } = require("./shopeeAutoSyncService");
+const { isBackgroundJobsEnabled } = require("../utils/backgroundJobs");
 
 let timer = null;
 let isRunning = false;
@@ -33,6 +34,15 @@ function startShopeeAutoSync({
   intervalMs = 60_000,
   runImmediately = true,
 } = {}) {
+  if (!isBackgroundJobsEnabled()) {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+    console.log("[Shopee Scheduler] Bỏ qua: background jobs đang tắt trên deployment này.");
+    return false;
+  }
+
   if (timer) {
     console.log("[Shopee Scheduler] Scheduler đã được khởi động.");
     return;

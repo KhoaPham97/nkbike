@@ -1,4 +1,5 @@
 const app = require("./app");
+const { isBackgroundJobsEnabled } = require("./src/utils/backgroundJobs");
 const express = require("express");
 const http = require("http");
 
@@ -57,6 +58,13 @@ server.listen(PORT, async () => {
   console.log(
     `Server has started successfully in ${process.env.NODE_ENV} mode at port ${PORT}`,
   );
+
+  if (!isBackgroundJobsEnabled()) {
+    console.log("[BACKGROUND JOBS] Disabled on this deployment. Scheduled jobs run only on the primary Render backend.");
+    return;
+  }
+
+  console.log("[BACKGROUND JOBS] Enabled on the primary backend.");
 
   try {
     await startShopeeAutoStockJob();
