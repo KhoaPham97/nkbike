@@ -330,6 +330,9 @@ module.exports = {
 
         rating: normalizeVariantNumber(data.rating, 5),
 
+        shopeeItemId: String(data.shopeeItemId || "").trim(),
+        shopeeShopId: String(data.shopeeShopId || "").trim(),
+
         originalPrice: String(data.originalPrice ?? "0"),
 
         thumbnail: String(data.thumbnail || ""),
@@ -477,6 +480,8 @@ module.exports = {
         "price",
         "thumbnail",
         "rating",
+        "shopeeItemId",
+        "shopeeShopId",
         "originalPrice",
         "categoryId",
         "stock",
