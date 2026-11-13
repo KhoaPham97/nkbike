@@ -6,12 +6,19 @@ async function getProductReviews(req, res) {
     const product = await Product.findById(req.params.id).select("_id title shopeeItemId shopeeShopId").lean();
     if (!product) return res.status(404).json({ success: false, message: "Không tìm thấy sản phẩm." });
 
+    const legacyItemFilter = product.shopeeItemId
+      ? [{
+          itemId: String(product.shopeeItemId),
+          $or: [{ productId: "" }, { productId: { $exists: false } }],
+        }]
+      : [];
+
     const filter = {
       hidden: { $ne: true },
       ...(product.shopeeShopId ? { shopId: String(product.shopeeShopId) } : {}),
       $or: [
         { productId: String(product._id) },
-        ...(product.shopeeItemId ? [{ itemId: String(product.shopeeItemId) }] : []),
+        ...legacyItemFilter,
       ],
     };
 
@@ -29,7 +36,7 @@ async function getProductReviews(req, res) {
     const [total, reviews, summary] = await Promise.all([
       ShopeeReview.countDocuments(pageFilter),
       ShopeeReview.find(pageFilter)
-        .select("commentId customerName rating content images videos reviewCreatedAt shopeeReply shopeeRepliedAt")
+        .select("commentId customerName rating content images videos reviewCreatedAt shopeeReply shopeeRepliedAt variantCode variantName variationSku")
         .sort({ reviewCreatedAt: -1, createdAt: -1 })
         .skip(skip).limit(limit).lean(),
       ShopeeReview.aggregate([
