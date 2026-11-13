@@ -526,6 +526,7 @@ async function getReservationsInternal(productId) {
         physicalQty: productVariant ? n(productVariant.qty) : n(product.qty),
         productReservedQty: productVariant ? n(productVariant.reservedQty) : 0,
         websiteQty: 0,
+        websiteReservedQty: 0,
         shopeeReservedQty: 0,
         orders: [],
       });
