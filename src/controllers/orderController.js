@@ -538,16 +538,40 @@ const reserveOrderStock = async ({ order, session }) => {
       session,
     });
 
-    const batchAvailableQty = batches.reduce(
-      (sum, batch) => sum + Math.max(0, toNumber(batch.remainingQty)),
-      0,
-    );
+    let remainingToReserve = qty;
+    const reservedBatchAllocations = [];
 
-    if (batchAvailableQty < qty) {
+    for (const batch of batches) {
+      if (remainingToReserve <= 0) break;
+
+      const batchRemainingQty = Math.max(0, toNumber(batch.remainingQty));
+      const batchReservedQty = Math.max(0, toNumber(batch.reservedQty));
+      const batchAvailableQty = Math.max(0, batchRemainingQty - batchReservedQty);
+      const reserveQty = Math.min(batchAvailableQty, remainingToReserve);
+
+      if (reserveQty <= 0) continue;
+
+      batch.reservedQty = batchReservedQty + reserveQty;
+      await batch.save({ session });
+
+      reservedBatchAllocations.push({
+        batchId: batch._id,
+        batchCode: batch.batchCode || "",
+        variantCode: normalizeVariantCode(batch.variantCode || variant?.variantCode),
+        variantName: normalizeVariantName(batch.variantName || variant?.name || variantName),
+        qty: reserveQty,
+      });
+
+      remainingToReserve -= reserveQty;
+    }
+
+    if (remainingToReserve > 0) {
       throw new Error(
-        `Lô tồn của "${product.title}" - ${variant?.name || "Mặc định"} chỉ còn ${batchAvailableQty}, không đủ giữ ${qty}.`,
+        `Các lô của "${product.title}" - ${variant?.name || "Mặc định"} không đủ hàng khả dụng để giữ. Còn thiếu ${remainingToReserve}.`,
       );
     }
+
+    item.reservedBatchAllocations = reservedBatchAllocations;
 
     product.reservedQty = toNumber(product.reservedQty) + qty;
     product.updated_at = new Date();
@@ -617,6 +641,26 @@ const releaseOrderStockReservation = async ({ order, session }) => {
       variant.reservedQty = toNumber(variant.reservedQty) - qty;
     }
 
+    for (const allocation of item.reservedBatchAllocations || []) {
+      const batch = await InventoryBatch.findById(allocation.batchId).session(session);
+      if (!batch) {
+        throw new Error(
+          `Không tìm thấy lô ${allocation.batchCode || allocation.batchId} để giải phóng hàng giữ.`,
+        );
+      }
+
+      const allocationQty = Math.max(0, toNumber(allocation.qty));
+      if (toNumber(batch.reservedQty) < allocationQty) {
+        throw new Error(
+          `Số lượng giữ của lô ${batch.batchCode || allocation.batchId} không khớp.`,
+        );
+      }
+
+      batch.reservedQty = toNumber(batch.reservedQty) - allocationQty;
+      await batch.save({ session });
+    }
+
+    item.reservedBatchAllocations = [];
     product.updated_at = new Date();
     await product.save({ session });
     totalReleased += qty;
@@ -714,7 +758,12 @@ const deductOrderStockFIFO = async ({ order, session, userId }) => {
     });
 
     const availableBatchQty = batches.reduce(
-      (sum, batch) => sum + Math.max(0, toNumber(batch.remainingQty)),
+      (sum, batch) =>
+        sum +
+        Math.max(
+          0,
+          toNumber(batch.remainingQty) - toNumber(batch.reservedQty),
+        ),
       0,
     );
 
@@ -734,8 +783,12 @@ const deductOrderStockFIFO = async ({ order, session, userId }) => {
       if (remainingToDeduct <= 0) break;
 
       const batchBeforeQty = toNumber(batch.remainingQty);
+      const batchAvailableQty = Math.max(
+        0,
+        batchBeforeQty - toNumber(batch.reservedQty),
+      );
 
-      const deductQty = Math.min(batchBeforeQty, remainingToDeduct);
+      const deductQty = Math.min(batchAvailableQty, remainingToDeduct);
 
       if (deductQty <= 0) continue;
 
