@@ -2,7 +2,8 @@ const crypto = require("crypto");
 const path = require("path");
 const { Media } = require("../models/media");
 const { Product } = require("../models/products");
-const { putObject, deleteObject } = require("../services/r2Storage");
+const { uploadImage, deleteImage } = require("../services/cloudinaryStorage");
+const { deleteObject: deleteR2Object } = require("../services/r2Storage");
 
 const MIME_EXTENSIONS = {
   "image/jpeg": "jpg",
@@ -80,13 +81,14 @@ const uploadMedia = async (req, res) => {
       }
       const filename = crypto.randomUUID() + "." + MIME_EXTENSIONS[file.mimetype];
       const storageKey = folder + "/" + filename;
-      const stored = await putObject({ key: storageKey, body: file.buffer, contentType: file.mimetype });
+      const stored = await uploadImage(file, folder, crypto.randomUUID());
       try {
         const record = await Media.create({
           filename,
           originalName: safeName(file.originalname),
           url: stored.url,
-          storageKey,
+          storageKey: stored.key,
+          storageProvider: "cloudinary",
           mimeType: file.mimetype,
           size: file.size,
           folder,
@@ -94,11 +96,11 @@ const uploadMedia = async (req, res) => {
         });
         uploaded.push(record);
       } catch (dbError) {
-        await deleteObject(storageKey).catch(() => {});
+        await deleteImage(stored.key).catch(() => {});
         throw dbError;
       }
     }
-    return res.status(201).json({ success: true, message: "Đã tải lên " + uploaded.length + " ảnh", media: uploaded });
+    return res.status(201).json({ success: true, message: "Đã tải lên " + uploaded.length + " ảnh lên Cloudinary", media: uploaded });
   } catch (error) {
     console.error("uploadMedia:", error);
     return res.status(error.statusCode || 500).json({
@@ -144,7 +146,8 @@ const deleteMedia = async (req, res) => {
         product: references,
       });
     }
-    await deleteObject(media.storageKey);
+    if (media.storageProvider === "cloudinary") await deleteImage(media.storageKey);
+    else await deleteR2Object(media.storageKey);
     await media.deleteOne();
     return res.json({ success: true, message: "Đã xóa ảnh" });
   } catch (error) {
