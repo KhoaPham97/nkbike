@@ -134,7 +134,7 @@ const getReservations = async (req, res) => {
         $or: [{ stockReserved: true }, { stockDeducted: true }],
       })
         .select(
-          "_id code status customerName customerPhone items created_at updated_at stockDeducted",
+          "_id code status customerName customerPhone items created_at updated_at stockDeducted stockReserved",
         )
         .lean(),
 
@@ -501,7 +501,7 @@ async function getReservationsInternal(productId) {
   const [websiteOrders, shopeeOrders] = await Promise.all([
     Order.find({
       status: { $in: ACTIVE_WEBSITE_STATUSES },
-      stockDeducted: true,
+      $or: [{ stockReserved: true }, { stockDeducted: true }],
       "items.productId": product._id,
     }).lean(),
 
@@ -593,7 +593,12 @@ async function getReservationsInternal(productId) {
 
   const formattedVariants = Array.from(variants.values()).map((variant) => ({
     ...variant,
-    availableQty: Math.max(0, variant.physicalQty - variant.shopeeReservedQty),
+    availableQty: Math.max(
+      0,
+      variant.physicalQty -
+        variant.websiteReservedQty -
+        variant.shopeeReservedQty,
+    ),
     orders: variant.orders.sort(
       (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0),
     ),
@@ -612,6 +617,10 @@ async function getReservationsInternal(productId) {
       (sum, variant) => sum + variant.websiteQty,
       0,
     ),
+    websiteReservedQty: formattedVariants.reduce(
+      (sum, variant) => sum + variant.websiteReservedQty,
+      0,
+    ),
     shopeeReservedQty: formattedVariants.reduce(
       (sum, variant) => sum + variant.shopeeReservedQty,
       0,
@@ -620,7 +629,8 @@ async function getReservationsInternal(productId) {
       0,
       n(product.qty) -
         formattedVariants.reduce(
-          (sum, variant) => sum + variant.shopeeReservedQty,
+          (sum, variant) =>
+            sum + variant.websiteReservedQty + variant.shopeeReservedQty,
           0,
         ),
     ),
