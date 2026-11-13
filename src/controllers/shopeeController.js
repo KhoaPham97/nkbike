@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const ShopeeShop = require("../models/ShopeeShop");
 const ShopeeSkuMapping = require("../models/ShopeeSkuMapping");
 const { Product } = require("../models/products");
+const { backfillShopeeReviewMappings } = require("../services/shopeeReviewSyncService");
 
 const {
   getShopeeAuthUrl,
@@ -532,6 +533,12 @@ exports.createSkuMappingAsync = async (req, res) => {
       updatedBy: userId,
     });
 
+    try {
+      await backfillShopeeReviewMappings({ shopId: data.shopId });
+    } catch (syncError) {
+      console.error("[Shopee Review] Backfill after mapping create failed:", syncError);
+    }
+
     const result = await ShopeeSkuMapping.findById(mapping._id)
       .populate({
         path: "productId",
@@ -588,6 +595,12 @@ exports.updateSkuMappingAsync = async (req, res) => {
         select: "title name code variants type",
       })
       .lean();
+
+    try {
+      await backfillShopeeReviewMappings({ shopId: data.shopId });
+    } catch (syncError) {
+      console.error("[Shopee Review] Backfill after mapping update failed:", syncError);
+    }
 
     return res.json({
       success: true,
@@ -1086,6 +1099,12 @@ exports.autoMatchSkuMappingsAsync = async (req, res) => {
           message: error.message,
         });
       }
+    }
+
+    try {
+      await backfillShopeeReviewMappings({ shopId });
+    } catch (syncError) {
+      console.error("[Shopee Review] Backfill after auto-match failed:", syncError);
     }
 
     return res.json({
