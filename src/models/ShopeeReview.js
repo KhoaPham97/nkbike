@@ -77,6 +77,8 @@ const shopeeReviewSchema = new mongoose.Schema(
       trim: true,
     },
 
+    hidden: { type: Boolean, default: false, index: true },
+
     images: {
       type: [String],
       default: [],
