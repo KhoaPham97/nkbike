@@ -58,6 +58,13 @@ const inventoryBatchSchema = new mongoose.Schema(
       min: 0,
     },
 
+    // Số lượng đã được giữ cho các đơn chưa hoàn tất.
+    reservedQty: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
     // Giá vốn lưu bằng CNY.
     unitCost: {
       type: Number,
