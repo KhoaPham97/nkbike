@@ -221,4 +221,104 @@ async function persistShopeeReviews({ shopId, reviews = [] }) {
   };
 }
 
-module.exports = { persistShopeeReviews };
+
+async function backfillShopeeReviewMappings({ shopId }) {
+  const normalizedShopId = toText(shopId);
+  if (!normalizedShopId) throw new Error("Thiếu shopId để cập nhật ánh xạ đánh giá.");
+
+  const mappings = await ShopeeSkuMapping.find({
+    shopId: normalizedShopId,
+    isActive: true,
+  })
+    .select("itemId modelId itemSku variationSku productId variantCode variantName")
+    .lean();
+
+  if (!mappings.length) {
+    return { mappings: 0, linked: 0, ambiguous: 0 };
+  }
+
+  const productIds = [...new Set(mappings.map((mapping) => toText(mapping.productId)).filter(Boolean))];
+  const products = productIds.length
+    ? await Product.find({ _id: { $in: productIds } }).select("_id title thumbnail").lean()
+    : [];
+  const productById = new Map(products.map((product) => [String(product._id), product]));
+  const mappingsByItem = buildSkuMappingIndex(mappings);
+  const operations = [];
+
+  for (const mapping of mappings) {
+    const itemId = toText(mapping.itemId);
+    const modelId = toText(mapping.modelId || "0");
+    const product = productById.get(toText(mapping.productId));
+    if (!itemId || !product) continue;
+
+    const set = {
+      productId: String(product._id),
+      productName: product.title || "",
+      productImage: product.thumbnail || "",
+      itemSku: toText(mapping.itemSku),
+      variationSku: toText(mapping.variationSku),
+      variantCode: toText(mapping.variantCode),
+      variantName: toText(mapping.variantName),
+      mappingStatus: "mapped",
+    };
+
+    operations.push({
+      updateMany: {
+        filter: { shopId: normalizedShopId, itemId, modelId },
+        update: { $set: set },
+      },
+    });
+
+    const itemMappings = mappingsByItem.get(itemId) || [];
+    if (itemMappings.length === 1) {
+      operations.push({
+        updateMany: {
+          filter: {
+            shopId: normalizedShopId,
+            itemId,
+            $or: [{ modelId: "" }, { modelId: { $exists: false } }],
+          },
+          update: { $set: set },
+        },
+      });
+    }
+  }
+
+  let ambiguous = 0;
+  for (const [itemId, itemMappings] of mappingsByItem.entries()) {
+    if (itemMappings.length <= 1) continue;
+
+    operations.push({
+      updateMany: {
+        filter: {
+          shopId: normalizedShopId,
+          itemId,
+          $or: [{ modelId: "" }, { modelId: { $exists: false } }],
+        },
+        update: {
+          $set: {
+            productId: "",
+            productName: "",
+            productImage: "",
+            variantCode: "",
+            variantName: "",
+            mappingStatus: "ambiguous",
+          },
+        },
+      },
+    });
+    ambiguous++;
+  }
+
+  const result = operations.length
+    ? await ShopeeReview.bulkWrite(operations, { ordered: false })
+    : { modifiedCount: 0 };
+
+  return {
+    mappings: mappings.length,
+    linked: Number(result.modifiedCount || 0),
+    ambiguous,
+  };
+}
+
+module.exports = { persistShopeeReviews, backfillShopeeReviewMappings };
