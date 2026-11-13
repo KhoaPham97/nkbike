@@ -591,10 +591,6 @@ exports.createSkuMappingAsync = async (req, res) => {
     });
 
     const productSync = await syncProductShopeeIdsFromMappings([data.productId]);
-    const productSync = await syncProductShopeeIdsFromMappings([
-      currentMapping.productId,
-      data.productId,
-    ]);
     try {
       await backfillShopeeReviewMappings({ shopId: data.shopId });
     } catch (syncError) {
@@ -658,6 +654,11 @@ exports.updateSkuMappingAsync = async (req, res) => {
         select: "title name code variants type",
       })
       .lean();
+
+    const productSync = await syncProductShopeeIdsFromMappings([
+      currentMapping.productId,
+      data.productId,
+    ]);
 
     try {
       await backfillShopeeReviewMappings({ shopId: data.shopId });
