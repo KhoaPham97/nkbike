@@ -932,6 +932,9 @@ const createOrderAsync = async (req, res) => {
   try {
     const {
       customerId,
+      customerName = "",
+      customerPhone = "",
+      customerAddress = "",
       items = [],
       discount = 0,
       shippingFee = 0,
@@ -951,6 +954,13 @@ const createOrderAsync = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "customerId không hợp lệ",
+      });
+    }
+
+    if (!customerId && (!String(customerName || "").trim() || !String(customerPhone || "").trim() || !String(customerAddress || "").trim())) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng cung cấp tên, số điện thoại và địa chỉ nhận hàng",
       });
     }
 
@@ -1118,9 +1128,9 @@ const createOrderAsync = async (req, res) => {
         code,
 
         customerId: customer?._id || null,
-        customerName: customer?.name || "Khách lẻ",
-        customerPhone: customer?.phone || "",
-        customerAddress: customer?.address || "",
+        customerName: customer?.name || String(customerName || "").trim(),
+        customerPhone: customer?.phone || String(customerPhone || "").trim(),
+        customerAddress: customer?.address || String(customerAddress || "").trim(),
 
         items: orderItems,
 
@@ -1519,6 +1529,9 @@ const listOrdersAsync = async (req, res) => {
     const toDate = String(req.query.toDate || "").trim();
 
     const filter = {};
+    // Mini App truyền số điện thoại để chỉ nhận đơn của đúng khách hàng.
+    const customerPhone = String(req.query.phone || "").trim();
+    if (customerPhone) filter.customerPhone = customerPhone;
 
     if (status) {
       if (!ALLOWED_STATUSES.includes(status)) {
