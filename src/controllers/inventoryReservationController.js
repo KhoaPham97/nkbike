@@ -217,8 +217,8 @@ const getReservations = async (req, res) => {
 
     // =====================================================
     // WEBSITE
-    // Website đã trừ tồn kho khi tạo đơn.
-    // Chỉ thống kê cam kết đơn hàng, KHÔNG trừ tồn lần nữa.
+    // Website giữ tồn khi tạo đơn; tồn thực tế chỉ giảm khi đơn hoàn tất.
+    // Đơn cũ đã trừ kho vẫn được thống kê nhưng không giữ thêm lần nữa.
     // =====================================================
 
     if (sourceFilter === "all" || sourceFilter === "website") {
@@ -355,8 +355,7 @@ const getReservations = async (req, res) => {
         variants,
         totalOrders,
 
-        // Website đã trừ kho khi tạo đơn.
-        // Chỉ Shopee reservedQty mới tiếp tục chiếm tồn vật lý.
+        // Chỉ lượng đang giữ của website và Shopee mới trừ khỏi tồn khả dụng.
         availableQty: Math.max(
           0,
           row.physicalQty - row.websiteReservedQty - row.shopeeReservedQty,
