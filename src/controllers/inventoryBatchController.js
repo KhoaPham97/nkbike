@@ -368,15 +368,27 @@ const getProductBatchesAsync = async (req, res) => {
       .sort({ importDate: 1, createdAt: 1, _id: 1 })
       .lean();
 
+    const batchesWithAvailability = batches.map((batch) => ({
+      ...batch,
+      availableQty: Math.max(0, n(batch.remainingQty) - n(batch.reservedQty)),
+    }));
+
     const totalRemaining = batches.reduce(
       (sum, batch) => sum + n(batch.remainingQty),
       0,
     );
 
+    const totalReserved = batches.reduce(
+      (sum, batch) => sum + n(batch.reservedQty),
+      0,
+    );
+
     return res.json({
       success: true,
-      batches,
+      batches: batchesWithAvailability,
       totalRemaining,
+      totalReserved,
+      totalAvailable: Math.max(0, totalRemaining - totalReserved),
     });
   } catch (error) {
     console.error("getProductBatchesAsync:", error);
