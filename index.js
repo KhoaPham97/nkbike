@@ -7,6 +7,7 @@ const { Server } = require("socket.io");
 const { startShopeeAutoStockJob } = require("./src/jobs/shopeeAutoStockJob");
 const { startShopeeOrderSyncJob } = require("./src/jobs/shopeeOrderSyncJob");
 const { startShopeeAutoReviewJob } = require("./src/jobs/shopeeAutoReviewJob");
+const { startShopeeReviewSyncJob } = require("./src/jobs/shopeeReviewSyncJob");
 const { startShopeeStockSyncJob } = require("./src/jobs/shopeeStockSyncJob");
 const chatRoutes = require("./src/routes/chatRoute");
 
@@ -76,6 +77,13 @@ server.listen(PORT, async () => {
     console.log("[Shopee Auto Review] Khởi tạo thành công.");
   } catch (error) {
     console.error("[Shopee Auto Review] Không thể khởi tạo:", error);
+  }
+
+  try {
+    startShopeeReviewSyncJob();
+    console.log("[Shopee Review Sync] Khởi tạo thành công.");
+  } catch (error) {
+    console.error("[Shopee Review Sync] Không thể khởi tạo:", error);
   }
 
   try {
