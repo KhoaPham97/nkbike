@@ -1103,7 +1103,7 @@ const syncOrderStockAsync = async (req, res) => {
 
 /* =========================================================
    CREATE ORDER
-   Tạo đơn nhưng chưa trừ kho.
+   Tạo đơn và giữ tồn khả dụng; chưa giảm tồn thực tế.
 ========================================================= */
 
 const createOrderAsync = async (req, res) => {
