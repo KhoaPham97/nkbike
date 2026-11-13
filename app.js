@@ -78,7 +78,9 @@ app.use(userRoute);
 app.use(cartRoute);
 app.use(stripeCheckoutRoute);
 app.use(paypalCheckoutRoute);
+// Keep the singular route for existing clients and expose the plural alias used by Zalo.
 app.use("/api/order", orderRoute);
+app.use("/api/orders", orderRoute);
 app.use("/api/customers", customerRouter);
 app.use("/api/inventory", inventoryRouter);
 app.use("/api/analytics", analyticsRoutes);
