@@ -60,7 +60,10 @@ const signRequest = ({ method, key, body, contentType }) => {
     "AWS4-HMAC-SHA256 Credential=" + config.accessKeyId + "/" + scope +
     ", SignedHeaders=" + signedHeaders + ", Signature=" + signature;
 
-  return { url: "https://" + host + canonicalUri, headers, config };
+  // fetch/Undici sets the Host header itself; it is still included in the signature.
+  const requestHeaders = { ...headers };
+  delete requestHeaders.host;
+  return { url: "https://" + host + canonicalUri, headers: requestHeaders, config };
 };
 
 const putObject = async ({ key, body, contentType }) => {
