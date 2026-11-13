@@ -6,6 +6,7 @@ const mediaSchema = new mongoose.Schema(
     originalName: { type: String, default: "" },
     url: { type: String, required: true, unique: true },
     storageKey: { type: String, required: true, unique: true },
+    storageProvider: { type: String, enum: ["r2", "cloudinary"], default: "r2", index: true },
     mimeType: { type: String, required: true },
     size: { type: Number, required: true, min: 0 },
     folder: { type: String, default: "products", index: true },
