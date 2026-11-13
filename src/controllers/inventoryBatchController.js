@@ -639,6 +639,39 @@ const deductOrderStockByBatchesAsync = async (req, res) => {
 
       const productCache = new Map();
 
+      // Đơn đang giữ hàng: giải phóng phần giữ của chính đơn trước khi xuất.
+      if (order.stockReserved === true) {
+        for (const item of order.items || []) {
+          const qty = n(item.qty);
+          const productId = String(item.productId);
+          let product = productCache.get(productId);
+
+          if (!product) {
+            product = await Product.findById(item.productId).session(session);
+            if (!product) throw new Error(`Không tìm thấy sản phẩm ${item.productId}`);
+            productCache.set(productId, product);
+          }
+
+          if (n(product.reservedQty) < qty) {
+            throw new Error(`Số lượng giữ của "${product.title}" không khớp.`);
+          }
+          product.reservedQty = n(product.reservedQty) - qty;
+
+          const identity = resolveVariantIdentity(product, item.variantName, item.variantCode);
+          if (identity.variant) {
+            if (n(identity.variant.reservedQty) < qty) {
+              throw new Error(`Số lượng giữ của biến thể "${identity.variant.name}" không khớp.`);
+            }
+            identity.variant.reservedQty = n(identity.variant.reservedQty) - qty;
+          }
+
+          await product.save({ session });
+        }
+
+        order.stockReserved = false;
+        order.stockReservedAt = null;
+      }
+
       for (const item of order.items) {
         const qty = n(item.qty);
 
@@ -679,10 +712,11 @@ const deductOrderStockByBatchesAsync = async (req, res) => {
 
         const variant = identity.variant;
         const currentQty = variant ? n(variant.qty) : n(product.qty);
-        const reservedQty = variant ? n(variant.reservedQty) : 0;
+        const reservedQty = variant ? n(variant.reservedQty) : n(product.reservedQty);
         const availableQty = Math.max(0, currentQty - reservedQty);
+        const availableProductQty = Math.max(0, n(product.qty) - n(product.reservedQty));
 
-        if (availableQty < qty) {
+        if (availableProductQty < qty || availableQty < qty) {
           throw new Error(
             `${item.productTitle} chỉ còn khả dụng ${availableQty} (tồn ${currentQty}, đã giữ ${reservedQty}), cần ${qty}`,
           );
@@ -768,6 +802,8 @@ const deductOrderStockByBatchesAsync = async (req, res) => {
         await product.save({ session });
       }
 
+      order.stockReserved = false;
+      order.stockReservedAt = null;
       order.stockDeducted = true;
       order.updated_at = new Date();
 
