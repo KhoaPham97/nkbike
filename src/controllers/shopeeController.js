@@ -1170,9 +1170,12 @@ exports.autoMatchSkuMappingsAsync = async (req, res) => {
       }
     }
 
-    const productSync = await syncProductShopeeIdsFromMappings(
-      results.created.map((item) => item.productId),
-    );
+    // Đồng bộ cả ánh xạ đã tồn tại, không chỉ các mapping vừa tạo.
+    const mappedProductIds = await ShopeeSkuMapping.distinct("productId", {
+      shopId,
+      isActive: true,
+    });
+    const productSync = await syncProductShopeeIdsFromMappings(mappedProductIds);
     try {
       await backfillShopeeReviewMappings({ shopId });
     } catch (syncError) {
