@@ -63,6 +63,7 @@ const shopeeManagementRouter = require("./src/routes/shopeeManagementRouter");
 const shopeeInventoryRouter = require("./src/routes/shopeeInventoryRouter");
 const skuRoutes = require("./src/routes/skuRoutes");
 const shopeeReviewRoutes = require("./src/routes/shopeeReviewRoutes");
+const mediaRoutes = require("./src/routes/mediaRoute");
 
 // Connect to MongoDB
 require("./src/db/mongoose");
@@ -90,5 +91,6 @@ app.use("/api/shopee/management", shopeeManagementRouter);
 app.use("/api/shopee/inventory", shopeeInventoryRouter);
 app.use("/api/admin/sku", skuRoutes);
 app.use("/api/shopee/reviews", shopeeReviewRoutes);
+app.use("/api/media", mediaRoutes);
 
 module.exports = app;
