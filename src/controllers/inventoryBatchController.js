@@ -564,9 +564,15 @@ const updateOrderBatchAllocationsAsync = async (req, res) => {
           );
         }
 
-        if (n(batch.remainingQty) < qty) {
+        const ownReservedQty = (item.reservedBatchAllocations || [])
+          .filter((row) => String(row.batchId) === batchId)
+          .reduce((total, row) => total + n(row.qty), 0);
+        const availableBatchQty =
+          n(batch.remainingQty) - n(batch.reservedQty) + ownReservedQty;
+
+        if (availableBatchQty < qty) {
           throw new Error(
-            `Lô ${batch.batchCode} chỉ còn ${batch.remainingQty}`,
+            `Lô ${batch.batchCode} chỉ còn khả dụng ${Math.max(0, availableBatchQty)}`,
           );
         }
 
@@ -665,6 +671,16 @@ const deductOrderStockByBatchesAsync = async (req, res) => {
             identity.variant.reservedQty = n(identity.variant.reservedQty) - qty;
           }
 
+          for (const allocation of item.reservedBatchAllocations || []) {
+            const batch = await InventoryBatch.findById(allocation.batchId).session(session);
+            if (!batch || n(batch.reservedQty) < n(allocation.qty)) {
+              throw new Error(`Không thể giải phóng số lượng giữ ở lô ${allocation.batchCode || allocation.batchId}.`);
+            }
+            batch.reservedQty = n(batch.reservedQty) - n(allocation.qty);
+            await batch.save({ session });
+          }
+          item.reservedBatchAllocations = [];
+
           await product.save({ session });
         }
 
@@ -748,9 +764,13 @@ const deductOrderStockByBatchesAsync = async (req, res) => {
             );
           }
 
-          if (n(batch.remainingQty) < allocationQty) {
+          const batchAvailableQty = Math.max(
+            0,
+            n(batch.remainingQty) - n(batch.reservedQty),
+          );
+          if (batchAvailableQty < allocationQty) {
             throw new Error(
-              `Lô ${batch.batchCode} chỉ còn ${batch.remainingQty}, cần ${allocationQty}`,
+              `Lô ${batch.batchCode} chỉ còn khả dụng ${batchAvailableQty}, cần ${allocationQty}`,
             );
           }
 
