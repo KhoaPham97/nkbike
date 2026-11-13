@@ -2,6 +2,7 @@ const express = require("express");
 const multer = require("multer");
 const { auth, adminOnly } = require("../middlewares/auth");
 const mediaController = require("../controllers/mediaController");
+const { migrateCloudinaryUrls } = require("../controllers/mediaMigrationController");
 
 const router = express.Router();
 const upload = multer({
@@ -26,6 +27,7 @@ const parseImageUpload = (req, res, next) => {
 router.use(auth, adminOnly);
 router.get("/", mediaController.listMedia);
 router.post("/upload", parseImageUpload, mediaController.uploadMedia);
+router.post("/migrate-cloudinary-urls", migrateCloudinaryUrls);
 router.patch("/:id", mediaController.updateMedia);
 router.delete("/:id", mediaController.deleteMedia);
 
