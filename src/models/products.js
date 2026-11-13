@@ -174,6 +174,13 @@ const productSchema = new mongoose.Schema(
       default: "",
     },
 
+    // Tổng số lượng đang được giữ cho các đơn hàng website.
+    reservedQty: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
     // Tổng tồn kho thực tế của sản phẩm.
     qty: {
       type: Number,
