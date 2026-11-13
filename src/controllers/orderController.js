@@ -454,6 +454,181 @@ const buildInventoryHistory = ({
 };
 
 /* =========================================================
+   RESERVE / RELEASE ORDER STOCK
+   - Tạo đơn: giữ tồn khả dụng, không giảm tồn thực tế.
+   - Hủy đơn chưa hoàn tất: chỉ giải phóng lượng giữ.
+========================================================= */
+
+const reserveOrderStock = async ({ order, session }) => {
+  if (order.stockReserved === true || order.stockDeducted === true) {
+    return { reserved: false, reservedQty: 0 };
+  }
+
+  const productCache = new Map();
+  let totalReserved = 0;
+
+  for (const item of order.items || []) {
+    const qty = toNumber(item.qty);
+
+    if (!Number.isSafeInteger(qty) || qty <= 0) {
+      throw new Error(`Số lượng của "${item.productTitle}" không hợp lệ.`);
+    }
+
+    const productId = String(item.productId);
+    let product = productCache.get(productId);
+
+    if (!product) {
+      product = await Product.findById(item.productId).session(session);
+      if (!product) {
+        throw new Error(`Không tìm thấy sản phẩm "${item.productTitle}".`);
+      }
+      productCache.set(productId, product);
+    }
+
+    const availableProductQty = Math.max(
+      0,
+      toNumber(product.qty) - toNumber(product.reservedQty),
+    );
+
+    if (availableProductQty < qty) {
+      throw new Error(
+        `Sản phẩm "${product.title}" chỉ còn ${availableProductQty} sản phẩm khả dụng, cần ${qty}.`,
+      );
+    }
+
+    const variantName = normalizeVariantName(item.variantName);
+    const variantCode = normalizeVariantCode(item.variantCode);
+    let variant = null;
+
+    if (variantCode || variantName) {
+      variant = findVariant(product, variantName, variantCode);
+
+      if (!variant) {
+        throw new Error(
+          `Không tìm thấy biến thể "${variantCode || variantName}" của "${product.title}".`,
+        );
+      }
+
+      const availableVariantQty = Math.max(
+        0,
+        toNumber(variant.qty) - toNumber(variant.reservedQty),
+      );
+
+      if (availableVariantQty < qty) {
+        throw new Error(
+          `Biến thể "${variant.name}" chỉ còn ${availableVariantQty} sản phẩm khả dụng, cần ${qty}.`,
+        );
+      }
+
+      item.variantCode = normalizeVariantCode(variant.variantCode);
+      item.variantName = normalizeVariantName(variant.name);
+      variant.reservedQty = toNumber(variant.reservedQty) + qty;
+    } else if (getVariants(product).length > 0) {
+      throw new Error(
+        `Sản phẩm "${product.title}" có phân loại, vui lòng chọn biến thể.`,
+      );
+    }
+
+    // Kiểm tra số lượng lô FIFO ngay lúc nhận đơn để tránh giữ hàng
+    // vượt quá lượng có thể xuất kho khi đơn hoàn tất.
+    const batches = await findInventoryBatchesFIFO({
+      product,
+      variant,
+      variantName,
+      session,
+    });
+
+    const batchAvailableQty = batches.reduce(
+      (sum, batch) => sum + Math.max(0, toNumber(batch.remainingQty)),
+      0,
+    );
+
+    if (batchAvailableQty < qty) {
+      throw new Error(
+        `Lô tồn của "${product.title}" - ${variant?.name || "Mặc định"} chỉ còn ${batchAvailableQty}, không đủ giữ ${qty}.`,
+      );
+    }
+
+    product.reservedQty = toNumber(product.reservedQty) + qty;
+    product.updated_at = new Date();
+    await product.save({ session });
+
+    totalReserved += qty;
+  }
+
+  order.stockReserved = true;
+  order.stockReservedAt = new Date();
+  order.markModified("items");
+
+  return { reserved: true, reservedQty: totalReserved };
+};
+
+const releaseOrderStockReservation = async ({ order, session }) => {
+  if (order.stockReserved !== true || order.stockDeducted === true) {
+    return { released: false, releasedQty: 0 };
+  }
+
+  const productCache = new Map();
+  let totalReleased = 0;
+
+  for (const item of order.items || []) {
+    const qty = Math.max(0, toNumber(item.qty));
+    if (!qty || !item.productId) continue;
+
+    const productId = String(item.productId);
+    let product = productCache.get(productId);
+
+    if (!product) {
+      product = await Product.findById(item.productId).session(session);
+      if (!product) {
+        throw new Error(
+          `Không tìm thấy sản phẩm ${item.productId} để giải phóng hàng giữ.`,
+        );
+      }
+      productCache.set(productId, product);
+    }
+
+    if (toNumber(product.reservedQty) < qty) {
+      throw new Error(
+        `Số lượng giữ của sản phẩm "${product.title}" không khớp. Không thể tự động giải phóng để tránh sai tồn.`,
+      );
+    }
+
+    product.reservedQty = toNumber(product.reservedQty) - qty;
+
+    const variantCode = normalizeVariantCode(item.variantCode);
+    const variantName = normalizeVariantName(item.variantName);
+
+    if (variantCode || variantName) {
+      const variant = findVariant(product, variantName, variantCode);
+
+      if (!variant) {
+        throw new Error(
+          `Không tìm thấy biến thể "${variantCode || variantName}" khi giải phóng hàng giữ.`,
+        );
+      }
+
+      if (toNumber(variant.reservedQty) < qty) {
+        throw new Error(
+          `Số lượng giữ của biến thể "${variant.name}" không khớp. Không thể tự động giải phóng.`,
+        );
+      }
+
+      variant.reservedQty = toNumber(variant.reservedQty) - qty;
+    }
+
+    product.updated_at = new Date();
+    await product.save({ session });
+    totalReleased += qty;
+  }
+
+  order.stockReserved = false;
+  order.stockReservedAt = null;
+
+  return { released: true, releasedQty: totalReleased };
+};
+
+/* =========================================================
    FIFO: DEDUCT ORDER STOCK
 ========================================================= */
 
@@ -522,7 +697,7 @@ const deductOrderStockFIFO = async ({ order, session, userId }) => {
       );
     }
 
-    const availableProductQty = toNumber(product.qty);
+    const availableProductQty = Math.max(0, toNumber(product.qty) - toNumber(product.reservedQty));
 
     if (availableProductQty < qty) {
       throw new Error(
@@ -1151,6 +1326,8 @@ const createOrderAsync = async (req, res) => {
         updated_at: new Date(),
       });
 
+      // Giữ hàng ngay khi tạo đơn. Tồn thực tế chưa giảm cho đến khi hoàn tất.
+      await reserveOrderStock({ order, session });
       await order.save({ session });
 
       if (customer) {
@@ -1167,7 +1344,7 @@ const createOrderAsync = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: "Tạo đơn hàng thành công, chưa trừ tồn kho",
+      message: "Tạo đơn hàng thành công, hàng đã được giữ và chưa trừ tồn kho",
       order: createdOrder,
     });
   } catch (error) {
@@ -1681,21 +1858,32 @@ const updateOrderStatusAsync = async (req, res) => {
         return;
       }
 
-      // Hoàn tất đơn: xuất kho FIFO
+      // Hoàn tất: giải phóng phần giữ của chính đơn này trước,
+      // sau đó xuất kho FIFO. Mọi thao tác nằm trong cùng transaction.
       if (newStatus === "completed" && order.stockDeducted !== true) {
-        stockResult = await deductOrderStockFIFO({
+        if (order.stockReserved === true) {
+          stockResult = await releaseOrderStockReservation({ order, session });
+        }
+
+        const deducted = await deductOrderStockFIFO({
           order,
           session,
           userId: req.user?._id || null,
         });
+
+        stockResult = {
+          ...(stockResult || {}),
+          ...deducted,
+          deducted: true,
+        };
       }
 
-      // Hủy đơn: hoàn kho nếu đã xuất kho
+      // Hủy đơn: nếu đã xuất thì hoàn về đúng lô; nếu chỉ đang giữ
+      // thì giải phóng reservedQty, không cộng tồn thực tế.
       if (newStatus === "cancelled" && order.stockDeducted === true) {
-        stockResult = await restoreOrderStockFIFO({
-          order,
-          session,
-        });
+        stockResult = await restoreOrderStockFIFO({ order, session });
+      } else if (newStatus === "cancelled" && order.stockReserved === true) {
+        stockResult = await releaseOrderStockReservation({ order, session });
       }
 
       // Hủy đơn: đưa số tiền thanh toán và công nợ về 0
@@ -1716,9 +1904,9 @@ const updateOrderStatusAsync = async (req, res) => {
       success: true,
       message:
         newStatus === "completed"
-          ? "Xác nhận hoàn tất và xuất kho FIFO thành công"
+          ? "Đơn hàng hoàn tất, đã trừ tồn kho FIFO"
           : newStatus === "cancelled"
-            ? "Hủy đơn hàng, hoàn kho và đưa thanh toán về 0 thành công"
+            ? "Đã hủy đơn và giải phóng/hoàn tồn kho thành công"
             : "Cập nhật trạng thái đơn hàng thành công",
       order: updatedOrder,
       stock: stockResult,
