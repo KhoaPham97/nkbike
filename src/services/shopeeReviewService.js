@@ -28,8 +28,10 @@ function normalizeReview(review) {
     modelIdList: review?.model_id_list || [],
     orderSn: review?.order_sn || "",
     customerName: review?.buyer_username || "",
+    customerUsername: review?.buyer_username || "",
     rating: Number(review?.rating_star || 0),
     content: review?.comment || "",
+    hidden: Boolean(review?.hidden),
     images: media.image_url_list || [],
     videos: media.video_url_list || [],
     createdAt: review?.create_time
