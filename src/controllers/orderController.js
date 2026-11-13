@@ -1401,6 +1401,22 @@ const createOrderAsync = async (req, res) => {
       createdOrder = order;
     });
 
+    // Gửi thông báo realtime đến các phiên Admin đang kết nối.
+    try {
+      const io = req.app.get("io");
+      if (io && createdOrder) {
+        io.of("/order-notifications").to("admins").emit("order:new", {
+          orderId: String(createdOrder._id),
+          code: createdOrder.code,
+          customerName: createdOrder.customerName,
+          totalAmount: createdOrder.totalAmount,
+          created_at: createdOrder.created_at,
+        });
+      }
+    } catch (notificationError) {
+      console.error("EMIT NEW ORDER NOTIFICATION ERROR:", notificationError);
+    }
+
     return res.status(201).json({
       success: true,
       message: "Tạo đơn hàng thành công, hàng đã được giữ và chưa trừ tồn kho",
