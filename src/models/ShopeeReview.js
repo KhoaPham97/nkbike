@@ -51,6 +51,38 @@ const shopeeReviewSchema = new mongoose.Schema(
       trim: true,
     },
 
+    itemSku: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    variationSku: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    variantCode: {
+      type: String,
+      default: "",
+      trim: true,
+      index: true,
+    },
+
+    variantName: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    mappingStatus: {
+      type: String,
+      enum: ["unmapped", "mapped", "ambiguous"],
+      default: "unmapped",
+      index: true,
+    },
+
     customerName: {
       type: String,
       default: "",
