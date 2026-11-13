@@ -14,6 +14,7 @@ const chatRoutes = require("./src/routes/chatRoute");
 
 const setupChatSocket = require("./src/socket/chatSocket");
 const setupStockNotificationSocket = require("./src/socket/stockNotificationSocket");
+const setupOrderNotificationSocket = require("./src/socket/orderNotificationSocket");
 const setupShopeeOrderSocket = require("./src/socket/shopeeOrderSocket");
 const setupShopeeReviewSocket = require("./src/socket/shopeeReviewSocket");
 
@@ -45,6 +46,7 @@ app.use("/api/chat", chatRoutes);
 
 setupChatSocket(io);
 setupStockNotificationSocket(io);
+setupOrderNotificationSocket(io);
 setupShopeeOrderSocket(io);
 setupShopeeReviewSocket(io);
 
