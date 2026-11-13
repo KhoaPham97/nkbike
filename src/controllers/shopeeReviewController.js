@@ -8,6 +8,7 @@ const {
   sendShopeeReviewReply,
 } = require("../services/shopeeReviewService");
 const { getShopeeItemIds } = require("../services/shopeeService");
+const { persistShopeeReviews } = require("../services/shopeeReviewSyncService");
 // =====================================================
 // HELPERS
 // =====================================================
@@ -54,31 +55,7 @@ async function getReviews(req, res) {
       itemId,
     });
 
-    // Cache đánh giá đã đồng bộ để Shopee Chat tạo nhiệm vụ nhân viên kiểm tra.
-    for (const review of result.reviews || []) {
-      if (!review.commentId) continue;
-      await ShopeeReview.findOneAndUpdate(
-        { shopId: String(shopId), commentId: String(review.commentId) },
-        { $set: {
-          shopId: String(shopId),
-          commentId: String(review.commentId),
-          orderSn: String(review.orderSn || ""),
-          itemId: String(review.itemId || ""),
-          modelId: String(review.modelId || ""),
-          customerName: String(review.customerName || ""),
-          customerUsername: String(review.customerName || ""),
-          rating: Number(review.rating || 0),
-          content: String(review.content || ""),
-          images: Array.isArray(review.images) ? review.images : [],
-          videos: Array.isArray(review.videos) ? review.videos : [],
-          reviewCreatedAt: review.createdAt || null,
-          shopeeReply: String(review.shopeeReply || ""),
-          shopeeRepliedAt: review.repliedAt || null,
-          lastSyncedAt: new Date(),
-        } },
-        { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true },
-      );
-    }
+    await persistShopeeReviews({ shopId, reviews: result.reviews || [] });
 
     return res.json({
       success: true,
@@ -162,10 +139,12 @@ async function getAllReviews(req, res) {
     });
 
     const reviews = result.reviews || [];
+    const sync = await persistShopeeReviews({ shopId, reviews });
 
     return res.json({
       success: true,
-      message: "Đã tải đánh giá từ các sản phẩm Shopee.",
+      message: "Đã đồng bộ và lưu đánh giá từ các sản phẩm Shopee.",
+      sync,
       data: reviews,
       pagination: {
         total: reviews.length,
