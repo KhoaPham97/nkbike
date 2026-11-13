@@ -207,6 +207,18 @@ const orderSchema = new mongoose.Schema(
       default: Date.now,
     },
 
+    // Đơn đã giữ hàng nhưng chưa trừ tồn thực tế.
+    stockReserved: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
+    stockReservedAt: {
+      type: Date,
+      default: null,
+    },
+
     stockDeducted: {
       type: Boolean,
       default: false,
