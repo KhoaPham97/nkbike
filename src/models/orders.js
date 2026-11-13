@@ -62,7 +62,25 @@ const orderItemSchema = new mongoose.Schema(
       default: "",
     },
 
-    // Phân bổ lô FIFO
+    // Các lô được giữ khi tạo đơn, chưa làm giảm remainingQty.
+    reservedBatchAllocations: {
+      type: [
+        {
+          batchId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "InventoryBatch",
+            required: true,
+          },
+          batchCode: { type: String, default: "" },
+          variantCode: { type: String, default: "", trim: true },
+          variantName: { type: String, default: "", trim: true },
+          qty: { type: Number, required: true, min: 0 },
+        },
+      ],
+      default: [],
+    },
+
+    // Phân bổ lô FIFO đã xuất kho.
     batchAllocations: {
       type: [
         {
