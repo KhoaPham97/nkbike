@@ -80,7 +80,6 @@ const uploadMedia = async (req, res) => {
         throw error;
       }
       const filename = crypto.randomUUID() + "." + MIME_EXTENSIONS[file.mimetype];
-      const storageKey = folder + "/" + filename;
       const stored = await uploadImage(file, folder, crypto.randomUUID());
       try {
         const record = await Media.create({
