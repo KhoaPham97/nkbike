@@ -1411,6 +1411,7 @@ const createOrderAsync = async (req, res) => {
           customerName: createdOrder.customerName,
           totalAmount: createdOrder.totalAmount,
           created_at: createdOrder.created_at,
+          source: String(req.body?.source || (req.get("origin") || "").includes("zalo-app") ? "zalo" : "website").toLowerCase(),
         });
       }
     } catch (notificationError) {
