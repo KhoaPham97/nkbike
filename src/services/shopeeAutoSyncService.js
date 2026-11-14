@@ -323,6 +323,7 @@ async function upsertShopeeOrder(shopId, normalized) {
     shopId: String(shopId),
     orderSn: normalized.orderSn,
   });
+  const isNew = !existing;
 
   const oldItems = existing?.items || [];
   const nextItems = [];
@@ -406,7 +407,7 @@ async function upsertShopeeOrder(shopId, normalized) {
     },
   );
 
-  return existing;
+  return { order: existing, isNew };
 }
 
 // =====================================================
@@ -1024,6 +1025,7 @@ async function syncOneShop(shop) {
     deducted: 0,
     released: 0,
     errors: [],
+    newOrders: [],
   };
 
   do {
@@ -1055,7 +1057,18 @@ async function syncOneShop(shop) {
           throw new Error("Đơn Shopee không có order_sn");
         }
 
-        const order = await upsertShopeeOrder(shopId, normalized);
+        const upsertResult = await upsertShopeeOrder(shopId, normalized);
+        const order = upsertResult.order;
+
+        if (upsertResult.isNew) {
+          result.newOrders.push({
+            orderId: String(order._id),
+            orderSn: order.orderSn,
+            customerName: order.recipientName || order.buyerUsername || "Khách Shopee",
+            totalAmount: Number(order.totalAmount || 0),
+            created_at: order.createTime || new Date(),
+          });
+        }
 
         result.saved += 1;
 
