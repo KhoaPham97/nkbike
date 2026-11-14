@@ -33,6 +33,30 @@ const normalizeShopId = (value) => {
   return String(value || "").trim();
 };
 
+const emitNewShopeeOrderNotifications = (io, results = []) => {
+  if (!io) return;
+
+  const namespace = io.of("/order-notifications");
+  const emitted = new Set();
+
+  for (const result of results) {
+    for (const order of result?.newOrders || []) {
+      const orderId = String(order.orderId || order._id || order.orderSn || "");
+      if (!orderId || emitted.has(orderId)) continue;
+      emitted.add(orderId);
+
+      namespace.to("admins").emit("order:new", {
+        orderId,
+        code: order.orderSn || "Đơn Shopee mới",
+        customerName: order.customerName || "Khách Shopee",
+        totalAmount: Number(order.totalAmount || 0),
+        created_at: order.created_at || new Date().toISOString(),
+        source: "shopee",
+      });
+    }
+  }
+};
+
 const buildPagination = (page, limit) => {
   const currentPage = Math.max(toNumber(page, 1), 1);
   const currentLimit = Math.min(Math.max(toNumber(limit, 20), 1), 100);
@@ -194,6 +218,7 @@ const syncOrdersAsync = async (req, res) => {
       }
 
       const result = await syncOneShop(shop);
+      emitNewShopeeOrderNotifications(req.app.get("io"), [result]);
 
       return res.status(200).json({
         success: true,
@@ -207,6 +232,7 @@ const syncOrdersAsync = async (req, res) => {
     // -------------------------------------------------
 
     const results = await syncAllShopeeOrders();
+    emitNewShopeeOrderNotifications(req.app.get("io"), results);
 
     const summary = {
       totalShops: results.length,
