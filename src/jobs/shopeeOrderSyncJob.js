@@ -85,6 +85,17 @@ function emitSyncEvent(result) {
 
   const namespace = currentIo.of("/shopee-orders");
 
+  for (const order of result.newOrders || []) {
+    currentIo.of("/order-notifications").to("admins").emit("order:new", {
+      orderId: order.orderId,
+      code: order.orderSn || "Đơn Shopee mới",
+      customerName: order.customerName || "Khách Shopee",
+      totalAmount: Number(order.totalAmount || 0),
+      created_at: order.created_at || new Date().toISOString(),
+      source: "shopee",
+    });
+  }
+
   namespace.to("shopee:admins").emit("shopee:orders:synced", {
     shopId: String(result.shopId),
     fetched: Number(result.fetched || 0),
