@@ -418,6 +418,11 @@ async function upsertShopeeOrder(shopId, normalized) {
           orderId: existing._id,
           orderSn: String(normalized.orderSn),
           customerName: existing.recipientName || existing.buyerUsername || "Khách Shopee",
+          items: (existing.items || []).map((item) => ({
+            itemName: toText(item.itemName) || "Sản phẩm Shopee",
+            modelName: toText(item.modelName),
+            quantity: Math.max(1, toNumber(item.quantity, 1)),
+          })),
           totalAmount: Number(existing.totalAmount || 0),
           orderCreatedAt: existing.createTime || new Date(),
           read: false,
