@@ -323,7 +323,7 @@ async function resyncMarkedReturnsAsync(req, res) {
 
     return res.status(200).json({
       success: true,
-      message: `Đồng bộ phục hồi hoàn tất: ${result.restored} phiếu, ${result.restoredQty} sản phẩm được cộng lại kho.`,
+      message: `Phục hồi ${result.restored} phiếu (+${result.restoredQty} sản phẩm vào kho); bỏ qua ${result.skipped}, lỗi ${result.failed}.`,
       data: result,
     });
   } catch (error) {
