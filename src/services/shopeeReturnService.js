@@ -1707,6 +1707,227 @@ async function resolveShopeeReturn({
   }
 }
 
+
+// =====================================================
+// RE-SYNC MARKED RETURNS THAT NEVER REACHED INVENTORY
+// Only restore records marked RESTOCK when no transaction,
+// batch, or inventory history exists. Ambiguous records are skipped.
+// =====================================================
+
+async function resyncMarkedShopeeReturns({ shopId, user }) {
+  const id = text(shopId);
+  if (!id) throw new Error("Thiếu shopId.");
+
+  const candidates = await ShopeeReturn.find({
+    shopId: id,
+    resolution: "RESTOCK",
+    stockProcessed: true,
+    restockedStockQty: { $gt: 0 },
+  }).sort({ resolutionAt: 1, createdAt: 1 }).lean();
+
+  const summary = {
+    scanned: candidates.length,
+    restored: 0,
+    restoredQty: 0,
+    skipped: 0,
+    failed: 0,
+    details: [],
+  };
+
+  for (const candidate of candidates) {
+    const session = await mongoose.startSession();
+    try {
+      let outcome = null;
+      await session.withTransaction(async () => {
+        const doc = await ShopeeReturn.findOne({
+          _id: candidate._id,
+          shopId: id,
+        }).session(session);
+
+        if (!doc || doc.resolution !== "RESTOCK" || !doc.stockProcessed ||
+            number(doc.restockedStockQty) <= 0) {
+          outcome = { status: "skipped", reason: "Phiếu không còn ở trạng thái đã đánh dấu lưu kho." };
+          return;
+        }
+
+        const idempotencyKey = ["SHOPEE", "RETURN", id, doc.returnSn, "RESOLVE"].join(":");
+        const existingTransaction = await ShopeeStockTransaction.findOne({
+          idempotencyKey,
+        }).session(session);
+
+        if (existingTransaction) {
+          outcome = { status: "skipped", reason: "Đã có giao dịch kho; không cộng lại." };
+          return;
+        }
+
+        const existingHistory = await InventoryHistory.findOne({
+          referenceType: "shopee_return",
+          referenceCode: doc.returnSn,
+          type: "import",
+          qty: { $gt: 0 },
+        }).session(session);
+
+        const existingBatch = await InventoryBatch.findOne({
+          source: "RETURN",
+          note: { $regex: escapeRegex(doc.returnSn) },
+          importQty: { $gt: 0 },
+        }).session(session);
+
+        if (existingHistory || existingBatch) {
+          outcome = {
+            status: "skipped",
+            reason: "Đã có lô hoặc lịch sử nhập một phần; cần đối soát thủ công để tránh cộng trùng.",
+          };
+          return;
+        }
+
+        const allocations = [];
+        let totalQty = 0;
+
+        for (let index = 0; index < (doc.items || []).length; index += 1) {
+          const item = doc.items[index];
+          const qty = Math.max(0, number(item.restockedQty));
+          if (qty <= 0) continue;
+
+          if (!item.productId || !text(item.variantCode) ||
+              (item.mappingStatus !== "mapped" && !item.isMapped)) {
+            throw new Error("Thiếu SKU mapping hợp lệ ở sản phẩm: " + text(item.itemName));
+          }
+
+          const product = await Product.findById(item.productId).session(session);
+          if (!product) throw new Error("Không tìm thấy sản phẩm kho: " + String(item.productId));
+
+          const variant = (product.variants || []).find(
+            row => text(row.variantCode || row.code) === text(item.variantCode)
+          );
+          if (!variant) throw new Error("Không tìm thấy biến thể " + text(item.variantCode));
+
+          const beforeQty = number(variant.qty);
+          const afterQty = beforeQty + qty;
+          const unitCost = Math.max(0, number(variant.unitCost));
+          const batchCode = createReturnBatchCode(doc.returnSn, index);
+
+          const duplicateBatchCode = await InventoryBatch.findOne({ batchCode }).session(session);
+          if (duplicateBatchCode) {
+            throw new Error("Mã lô hàng hoàn đã tồn tại; hệ thống dừng để tránh nhập trùng.");
+          }
+
+          const batch = new InventoryBatch({
+            batchCode,
+            productId: product._id,
+            productTitle: product.title || "",
+            productCode: product.code || "",
+            variantName: variant.name || item.variantName || "",
+            variantCode: item.variantCode,
+            importDate: new Date(),
+            importQty: qty,
+            remainingQty: qty,
+            unitCost,
+            importReceiptId: null,
+            importHistoryId: null,
+            source: "RETURN",
+            sourceConfidence: "high",
+            note: "Đồng bộ phục hồi hàng hoàn Shopee " + doc.returnSn,
+            createdBy: getUserId(user),
+            isActive: true,
+          });
+          await batch.save({ session });
+
+          variant.qty = afterQty;
+          product.qty = number(product.qty) + qty;
+          product.updated_at = new Date();
+          await product.save({ session });
+
+          const history = new InventoryHistory({
+            type: "import",
+            referenceType: "shopee_return",
+            referenceId: doc._id,
+            referenceCode: doc.returnSn,
+            productId: product._id,
+            productTitle: product.title || "",
+            productCode: product.code || "",
+            variantName: variant.name || item.variantName || "",
+            variantCode: item.variantCode,
+            batchId: batch._id,
+            batchCode,
+            unitCost,
+            qty,
+            beforeQty,
+            afterQty,
+            note: "Phục hồi tồn kho từ phiếu hoàn Shopee " + doc.returnSn,
+            createdBy: getUserId(user),
+            created_at: new Date(),
+          });
+          await history.save({ session });
+
+          batch.importHistoryId = history._id;
+          await batch.save({ session });
+
+          allocations.push({
+            productId: product._id,
+            variantCode: item.variantCode,
+            variantName: variant.name || item.variantName || "",
+            batchId: batch._id,
+            batchCode,
+            qty,
+            unitCost,
+            beforeQty,
+            afterQty,
+          });
+          totalQty += qty;
+        }
+
+        if (totalQty <= 0 || totalQty !== number(doc.restockedStockQty)) {
+          throw new Error(
+            "Tổng số lượng đã đánh dấu (" + number(doc.restockedStockQty) +
+            ") không khớp số lượng từng sản phẩm (" + totalQty + "). Không thay đổi tồn kho."
+          );
+        }
+
+        const transaction = new ShopeeStockTransaction({
+          idempotencyKey,
+          shopId: id,
+          orderSn: doc.orderSn,
+          returnSn: doc.returnSn,
+          kind: "return_import",
+          allocations,
+          totalQty,
+          status: "completed",
+          note: "Phục hồi giao dịch nhập kho đã đánh dấu trước đó",
+          createdBy: getUserId(user),
+        });
+        await transaction.save({ session });
+
+        outcome = { status: "restored", qty: totalQty };
+      });
+
+      if (outcome?.status === "restored") {
+        summary.restored += 1;
+        summary.restoredQty += outcome.qty;
+      } else {
+        summary.skipped += 1;
+      }
+      summary.details.push({
+        returnSn: candidate.returnSn,
+        orderSn: candidate.orderSn,
+        ...outcome,
+      });
+    } catch (error) {
+      summary.failed += 1;
+      summary.details.push({
+        returnSn: candidate.returnSn,
+        orderSn: candidate.orderSn,
+        status: "failed",
+        reason: error.message,
+      });
+    } finally {
+      await session.endSession();
+    }
+  }
+
+  return summary;
+}
+
 // =====================================================
 // EXPORT
 // =====================================================
@@ -1723,4 +1944,5 @@ module.exports = {
   receiveShopeeReturn,
   inspectShopeeReturn,
   resolveShopeeReturn,
+  resyncMarkedShopeeReturns,
 };
