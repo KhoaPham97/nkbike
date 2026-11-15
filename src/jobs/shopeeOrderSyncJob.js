@@ -5,6 +5,7 @@ const cron = require("node-cron");
 const ShopeeAutoStockJobLock = require("../models/ShopeeAutoStockJobLock");
 const { syncAllShopeeOrders } = require("../services/shopeeAutoSyncService");
 const ShopeeOrderNotification = require("../models/ShopeeOrderNotification");
+const ShopeeOrder = require("../models/ShopeeOrder");
 
 const LOCK_ID = "SHOPEE_ORDER_SYNC";
 const LOCK_DURATION_MS = 30 * 60 * 1000;
@@ -176,6 +177,32 @@ async function runShopeeOrderSync() {
           { upsert: true },
         );
       }
+    }
+
+    // One-time catch-up: orders saved by a manual sync before notification
+    // persistence was deployed should still appear in the admin notification list.
+    const recentOrders = await ShopeeOrder.find({
+      createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+    }).select("_id shopId orderSn recipientName buyerUsername totalAmount createTime createdAt").lean();
+
+    for (const order of recentOrders) {
+      await ShopeeOrderNotification.updateOne(
+        { shopId: String(order.shopId), orderSn: String(order.orderSn) },
+        {
+          $setOnInsert: {
+            source: "shopee",
+            shopId: String(order.shopId),
+            orderId: order._id,
+            orderSn: String(order.orderSn),
+            customerName: order.recipientName || order.buyerUsername || "Khách Shopee",
+            totalAmount: Number(order.totalAmount || 0),
+            orderCreatedAt: order.createTime || order.createdAt || new Date(),
+            read: false,
+            notifiedAt: order.createdAt || new Date(),
+          },
+        },
+        { upsert: true },
+      );
     }
 
     if (lockLost) {
