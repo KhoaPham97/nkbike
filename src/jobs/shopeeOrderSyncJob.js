@@ -4,6 +4,7 @@ const cron = require("node-cron");
 
 const ShopeeAutoStockJobLock = require("../models/ShopeeAutoStockJobLock");
 const { syncAllShopeeOrders } = require("../services/shopeeAutoSyncService");
+const ShopeeOrderNotification = require("../models/ShopeeOrderNotification");
 
 const LOCK_ID = "SHOPEE_ORDER_SYNC";
 const LOCK_DURATION_MS = 30 * 60 * 1000;
@@ -152,6 +153,30 @@ async function runShopeeOrderSync() {
     }, RENEW_INTERVAL_MS);
 
     const results = await syncAllShopeeOrders();
+
+    // Persist every newly discovered Shopee order before emitting realtime.
+    // The compound unique index makes this safe across retries.
+    for (const result of results) {
+      for (const order of result.newOrders || []) {
+        await ShopeeOrderNotification.updateOne(
+          { shopId: String(result.shopId), orderSn: String(order.orderSn) },
+          {
+            $setOnInsert: {
+              source: "shopee",
+              shopId: String(result.shopId),
+              orderId: order.orderId || null,
+              orderSn: String(order.orderSn),
+              customerName: order.customerName || "Khách Shopee",
+              totalAmount: Number(order.totalAmount || 0),
+              orderCreatedAt: order.created_at || null,
+              read: false,
+              notifiedAt: new Date(),
+            },
+          },
+          { upsert: true },
+        );
+      }
+    }
 
     if (lockLost) {
       throw new Error("Shopee Order Sync đã mất quyền giữ lock.");
