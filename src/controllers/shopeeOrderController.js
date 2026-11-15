@@ -49,6 +49,11 @@ const emitNewShopeeOrderNotifications = (io, results = []) => {
         orderId,
         code: order.orderSn || "Đơn Shopee mới",
         customerName: order.customerName || "Khách Shopee",
+        items: (order.items || []).map((item) => ({
+          itemName: toText(item.itemName) || "Sản phẩm Shopee",
+          modelName: toText(item.modelName),
+          quantity: Math.max(1, toNumber(item.quantity, 1)),
+        })),
         totalAmount: Number(order.totalAmount || 0),
         created_at: order.created_at || new Date().toISOString(),
         source: "shopee",
