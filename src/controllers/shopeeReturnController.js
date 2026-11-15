@@ -6,6 +6,7 @@ const {
   inspectShopeeReturn,
   resolveShopeeReturn,
   resyncMarkedShopeeReturns,
+  auditShopeeReturnHistory,
 } = require("../services/shopeeReturnService");
 
 // =====================================================
@@ -331,6 +332,28 @@ async function resyncMarkedReturnsAsync(req, res) {
   }
 }
 
+
+// =====================================================
+// 8. AUDIT FULL RETURN HISTORY (READ ONLY)
+// GET /returns/audit-history
+// =====================================================
+
+async function auditReturnHistoryAsync(req, res) {
+  try {
+    const shopId = requireShopId(req, res);
+    if (!shopId) return;
+
+    const result = await auditShopeeReturnHistory({ shopId });
+    return res.status(200).json({
+      success: true,
+      message: "Đã đối soát lịch sử phiếu hoàn. Chưa có thay đổi tồn kho.",
+      data: result,
+    });
+  } catch (error) {
+    return handleError(res, error);
+  }
+}
+
 // =====================================================
 // EXPORT
 // =====================================================
@@ -343,4 +366,5 @@ module.exports = {
   inspectReturnAsync,
   resolveReturnStockAsync,
   resyncMarkedReturnsAsync,
+  auditReturnHistoryAsync,
 };
