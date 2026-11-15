@@ -1120,6 +1120,22 @@ async function resolveShopeeReturn({
         );
       }
 
+      // Trừ trước phần deductedQty đã lưu để không phân bổ trùng khi
+      // một đơn có nhiều dòng cùng ánh xạ về một biến thể kho.
+      if (orderDoc) {
+        for (const orderItem of orderDoc.items || []) {
+          const productId = orderItem.productId;
+          const variantCode = text(orderItem.variantCode);
+          const storedDeducted = Math.max(0, number(orderItem.deductedQty));
+          if (!productId || !variantCode || storedDeducted <= 0) continue;
+          const key = `${String(productId)}_${variantCode}`;
+          exportedQtyByVariant.set(
+            key,
+            Math.max(0, number(exportedQtyByVariant.get(key)) - storedDeducted),
+          );
+        }
+      }
+
       // Failed-delivery packages must reconcile the original order so that
       // held quantities can be released even when the user chooses NO_RESTOCK.
       if (
@@ -1178,11 +1194,8 @@ async function resolveShopeeReturn({
             }
 
             if (productId && variantCode) {
-              const exportedQty = number(
-                exportedQtyByVariant.get(
-                  `${String(productId)}_${variantCode}`,
-                ),
-              );
+              const exportKey = `${String(productId)}_${variantCode}`;
+              const exportedQty = number(exportedQtyByVariant.get(exportKey));
               const multiplier = Math.max(
                 0.000001,
                 number(orderItem.quantityMultiplier, 1),
@@ -1195,7 +1208,13 @@ async function resolveShopeeReturn({
                 exportedQty,
                 orderedQty > 0 ? orderedQty : exportedQty,
               );
-              if (deductedQty > 0) orderItem.deductedQty = deductedQty;
+              if (deductedQty > 0) {
+                orderItem.deductedQty = deductedQty;
+                exportedQtyByVariant.set(
+                  exportKey,
+                  Math.max(0, exportedQty - deductedQty),
+                );
+              }
             }
           }
 
