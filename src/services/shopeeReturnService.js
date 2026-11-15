@@ -1928,6 +1928,108 @@ async function resyncMarkedShopeeReturns({ shopId, user }) {
   return summary;
 }
 
+
+// =====================================================
+// FULL HISTORICAL RETURN RECONCILIATION (READ ONLY)
+// =====================================================
+
+async function auditShopeeReturnHistory({ shopId }) {
+  const id = text(shopId);
+  if (!id) throw new Error("Thiếu shopId.");
+
+  const docs = await ShopeeReturn.find({ shopId: id })
+    .sort({ createTime: 1, createdAt: 1, _id: 1 })
+    .lean();
+
+  const report = {
+    scanned: docs.length,
+    safelyRecoverable: [],
+    alreadyRecorded: [],
+    partialOrAmbiguous: [],
+    notMarkedForRestock: [],
+    noRestockQuantity: [],
+    totals: {
+      safelyRecoverable: 0,
+      alreadyRecorded: 0,
+      partialOrAmbiguous: 0,
+      notMarkedForRestock: 0,
+      noRestockQuantity: 0,
+    },
+    auditedAt: new Date(),
+  };
+
+  for (const doc of docs) {
+    const returnSn = text(doc.returnSn);
+    const markedRestock = doc.resolution === "RESTOCK" ||
+      (doc.resolution == null && ["restocked", "partially_restocked"].includes(doc.warehouseStatus));
+    const qty = Math.max(0, number(doc.restockedStockQty) ||
+      (doc.items || []).reduce((sum, item) => sum + Math.max(0, number(item.restockedQty)), 0));
+
+    const [transaction, histories, batches] = await Promise.all([
+      ShopeeStockTransaction.findOne({
+        shopId: id,
+        returnSn,
+        kind: "return_import",
+        status: "completed",
+      }).lean(),
+      InventoryHistory.find({
+        referenceCode: returnSn,
+        referenceType: "shopee_return",
+        type: "import",
+        qty: { $gt: 0 },
+      }).select("_id qty productId variantCode batchCode").lean(),
+      InventoryBatch.find({
+        source: "RETURN",
+        note: { $regex: escapeRegex(returnSn) },
+        importQty: { $gt: 0 },
+      }).select("_id importQty productId variantCode batchCode").lean(),
+    ]);
+
+    const itemQty = (doc.items || []).reduce(
+      (sum, item) => sum + Math.max(0, number(item.restockedQty)), 0
+    );
+    const row = {
+      returnSn,
+      orderSn: doc.orderSn,
+      returnType: doc.returnType,
+      resolution: doc.resolution || null,
+      warehouseStatus: doc.warehouseStatus,
+      stockProcessed: Boolean(doc.stockProcessed),
+      markedQty: qty,
+      itemQty,
+      transactionFound: Boolean(transaction),
+      historyCount: histories.length,
+      batchCount: batches.length,
+      itemCount: (doc.items || []).length,
+    };
+
+    if (!markedRestock) {
+      report.notMarkedForRestock.push(row);
+    } else if (qty <= 0 || itemQty <= 0 || qty !== itemQty) {
+      report.noRestockQuantity.push({
+        ...row,
+        reason: "Thiếu số lượng nhập kho hoặc tổng số lượng đã đánh dấu không khớp từng dòng hàng.",
+      });
+    } else if (transaction && histories.length && batches.length) {
+      report.alreadyRecorded.push(row);
+    } else if (!transaction && histories.length === 0 && batches.length === 0 &&
+      doc.stockProcessed === true && doc.resolution === "RESTOCK") {
+      report.safelyRecoverable.push(row);
+    } else {
+      report.partialOrAmbiguous.push({
+        ...row,
+        reason: "Có dấu vết giao dịch/lô/lịch sử chưa đầy đủ hoặc trạng thái cũ chưa đủ căn cứ tự động cộng kho.",
+      });
+    }
+  }
+
+  for (const key of Object.keys(report.totals)) {
+    report.totals[key] = report[key].length;
+  }
+
+  return report;
+}
+
 // =====================================================
 // EXPORT
 // =====================================================
@@ -1945,4 +2047,5 @@ module.exports = {
   inspectShopeeReturn,
   resolveShopeeReturn,
   resyncMarkedShopeeReturns,
+  auditShopeeReturnHistory,
 };
