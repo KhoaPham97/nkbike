@@ -7,6 +7,15 @@ const shopeeOrderNotificationSchema = new mongoose.Schema(
     orderId: { type: mongoose.Schema.Types.ObjectId, ref: "ShopeeOrder", default: null },
     orderSn: { type: String, required: true, trim: true },
     customerName: { type: String, default: "Khách Shopee" },
+    // Snapshot tên sản phẩm và số lượng để thông báo không phụ thuộc dữ liệu đơn tải riêng.
+    items: {
+      type: [{
+        itemName: { type: String, default: "Sản phẩm Shopee" },
+        modelName: { type: String, default: "" },
+        quantity: { type: Number, default: 1 },
+      }],
+      default: [],
+    },
     totalAmount: { type: Number, default: 0 },
     orderCreatedAt: { type: Date, default: null },
     read: { type: Boolean, default: false, index: true },
