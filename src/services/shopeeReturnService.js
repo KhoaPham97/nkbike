@@ -1048,17 +1048,17 @@ async function resolveShopeeReturn({
         throw new Error("Không tìm thấy phiếu hàng hoàn.");
       }
 
-      if (doc.warehouseStatus !== "inspected") {
-        throw new Error(
-          "Phiếu phải được tiếp nhận và kiểm tra trước khi xử lý.",
-        );
-      }
-
       const canRetryZeroRestock =
         doc.resolution === "RESTOCK" &&
         number(doc.restockedStockQty) <= 0 &&
         doc.warehouseStatus === "closed" &&
         (doc.items || []).some((item) => number(item.goodQty) > 0);
+
+      if (doc.warehouseStatus !== "inspected" && !canRetryZeroRestock) {
+        throw new Error(
+          "Phiếu phải được tiếp nhận và kiểm tra trước khi xử lý.",
+        );
+      }
 
       if ((doc.resolution || doc.stockProcessed) && !canRetryZeroRestock) {
         throw new Error("Phiếu hàng hoàn đã được xử lý trước đó.");
