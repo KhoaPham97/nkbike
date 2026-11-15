@@ -390,6 +390,13 @@ router.post(
   ...adminAuth,
   shopeeReturnController.resolveReturnStockAsync,
 );
+
+// Phục hồi tồn kho cho các phiếu đã đánh dấu lưu kho nhưng thiếu giao dịch kho.
+router.post(
+  "/returns/resync-marked",
+  ...adminAuth,
+  shopeeReturnController.resyncMarkedReturnsAsync,
+);
 // =====================================================
 // PERSISTENT SHOPEE ORDER NOTIFICATIONS
 // =====================================================
