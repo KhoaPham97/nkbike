@@ -5,6 +5,7 @@ const {
   receiveShopeeReturn,
   inspectShopeeReturn,
   resolveShopeeReturn,
+  resyncMarkedShopeeReturns,
 } = require("../services/shopeeReturnService");
 
 // =====================================================
@@ -304,6 +305,32 @@ async function resolveReturnStockAsync(req, res) {
   }
 }
 
+
+// =====================================================
+// 7. RE-SYNC RETURNS ALREADY MARKED FOR RESTOCK
+// POST /returns/resync-marked
+// =====================================================
+
+async function resyncMarkedReturnsAsync(req, res) {
+  try {
+    const shopId = requireShopId(req, res);
+    if (!shopId) return;
+
+    const result = await resyncMarkedShopeeReturns({
+      shopId,
+      user: getUser(req),
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: `Đồng bộ phục hồi hoàn tất: ${result.restored} phiếu, ${result.restoredQty} sản phẩm được cộng lại kho.`,
+      data: result,
+    });
+  } catch (error) {
+    return handleError(res, error);
+  }
+}
+
 // =====================================================
 // EXPORT
 // =====================================================
@@ -315,4 +342,5 @@ module.exports = {
   receiveReturnAsync,
   inspectReturnAsync,
   resolveReturnStockAsync,
+  resyncMarkedReturnsAsync,
 };
