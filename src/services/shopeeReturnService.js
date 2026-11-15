@@ -1087,6 +1087,39 @@ async function resolveShopeeReturn({
         orderSn: doc.orderSn,
       }).session(session);
 
+      // Đối chiếu giao dịch xuất FIFO làm nguồn dữ liệu dự phòng.
+      // Một số đơn cũ đã xuất kho nhưng item.deductedQty chưa được lưu
+      // hoặc bị thiếu do phiên bản đồng bộ trước đây.
+      const exportTransaction = await ShopeeStockTransaction.findOne({
+        shopId: String(shopId),
+        orderSn: String(doc.orderSn),
+        kind: "order_export",
+        status: "completed",
+      })
+        .sort({ createdAt: -1 })
+        .session(session);
+
+      const legacyExportTransaction = exportTransaction
+        ? null
+        : await ShopeeStockTransaction.findOne({
+            idempotencyKey: `SHOPEE:ORDER:${shopId}:${doc.orderSn}:SHIP`,
+            status: "completed",
+          }).session(session);
+
+      const exportAllocations =
+        exportTransaction?.allocations ||
+        legacyExportTransaction?.allocations ||
+        [];
+
+      const exportedQtyByVariant = new Map();
+      for (const allocation of exportAllocations) {
+        const key = `${String(allocation.productId)}_${text(allocation.variantCode)}`;
+        exportedQtyByVariant.set(
+          key,
+          number(exportedQtyByVariant.get(key)) + Math.max(0, number(allocation.qty)),
+        );
+      }
+
       // Failed-delivery packages must reconcile the original order so that
       // held quantities can be released even when the user chooses NO_RESTOCK.
       if (
@@ -1117,9 +1150,58 @@ async function resolveShopeeReturn({
           }
 
           const receivedQty = Math.max(0, number(returnItem.receivedQty));
+          let deductedQty = Math.max(0, number(orderItem.deductedQty));
+
+          // Dữ liệu cũ có thể thiếu deductedQty dù đơn đã xuất kho.
+          // Chỉ khôi phục từ giao dịch xuất FIFO có thật, không suy đoán
+          // từ trạng thái COMPLETED hoặc số lượng đặt mua.
+          if (deductedQty <= 0 && exportAllocations.length > 0) {
+            let productId = orderItem.productId;
+            let variantCode = text(orderItem.variantCode);
+
+            if (!productId || !variantCode) {
+              const mapping = await ShopeeSkuMapping.findOne({
+                shopId: String(shopId),
+                itemId: text(returnItem.itemId),
+                modelId: text(returnItem.modelId || "0"),
+                isActive: true,
+              }).session(session);
+
+              if (mapping?.productId && text(mapping.variantCode)) {
+                productId = mapping.productId;
+                variantCode = text(mapping.variantCode);
+                orderItem.productId = productId;
+                orderItem.variantCode = variantCode;
+                orderItem.variantName =
+                  text(mapping.variantName) || orderItem.variantName;
+              }
+            }
+
+            if (productId && variantCode) {
+              const exportedQty = number(
+                exportedQtyByVariant.get(
+                  `${String(productId)}_${variantCode}`,
+                ),
+              );
+              const multiplier = Math.max(
+                0.000001,
+                number(orderItem.quantityMultiplier, 1),
+              );
+              const orderedQty = Math.max(
+                0,
+                number(orderItem.quantity) * multiplier,
+              );
+              deductedQty = Math.min(
+                exportedQty,
+                orderedQty > 0 ? orderedQty : exportedQty,
+              );
+              if (deductedQty > 0) orderItem.deductedQty = deductedQty;
+            }
+          }
+
           const deductedRemaining = Math.max(
             0,
-            number(orderItem.deductedQty) - number(orderItem.returnedQty),
+            deductedQty - number(orderItem.returnedQty),
           );
           const reservedRemaining = Math.max(0, number(orderItem.reservedQty));
 
@@ -1462,6 +1544,14 @@ async function resolveShopeeReturn({
 
           totalRestockedQty += qty;
         }
+      }
+
+      // Không cho phép đóng phiếu RESTOCK nếu thực tế không có
+      // dòng hàng nào được cộng vào kho. Tránh UI báo thành công giả.
+      if (choice === "RESTOCK" && totalRestockedQty <= 0) {
+        throw new Error(
+          "Không có số lượng hàng tốt đủ điều kiện nhập kho. Hãy kiểm tra số lượng đã xuất kho, số lượng thực nhận và SKU mapping; phiếu chưa được đóng.",
+        );
       }
 
       // =============================================
