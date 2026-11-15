@@ -47,6 +47,8 @@ function handleError(res, error) {
     "Phải phân loại đủ",
     "Không đủ số lượng lô tồn",
     "Đơn giao thất bại chưa ánh xạ",
+    "Không có số lượng hàng tốt",
+    "Phiếu đã có lô hoặc lịch sử nhập kho",
   ];
 
   const statusCode = clientErrors.some((keyword) =>
