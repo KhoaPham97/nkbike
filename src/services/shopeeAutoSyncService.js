@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 
 const ShopeeShop = require("../models/ShopeeShop");
 const ShopeeOrder = require("../models/ShopeeOrder");
+const ShopeeOrderNotification = require("../models/ShopeeOrderNotification");
 const ShopeeSkuMapping = require("../models/ShopeeSkuMapping");
 const ShopeeStockTransaction = require("../models/ShopeeStockTransaction");
 
@@ -406,6 +407,26 @@ async function upsertShopeeOrder(shopId, normalized) {
       runValidators: true,
     },
   );
+
+  if (isNew) {
+    await ShopeeOrderNotification.updateOne(
+      { shopId: String(shopId), orderSn: String(normalized.orderSn) },
+      {
+        $setOnInsert: {
+          source: "shopee",
+          shopId: String(shopId),
+          orderId: existing._id,
+          orderSn: String(normalized.orderSn),
+          customerName: existing.recipientName || existing.buyerUsername || "Khách Shopee",
+          totalAmount: Number(existing.totalAmount || 0),
+          orderCreatedAt: existing.createTime || new Date(),
+          read: false,
+          notifiedAt: new Date(),
+        },
+      },
+      { upsert: true },
+    );
+  }
 
   return { order: existing, isNew };
 }
