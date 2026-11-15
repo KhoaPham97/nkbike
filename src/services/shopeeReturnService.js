@@ -1243,15 +1243,25 @@ async function resolveShopeeReturn({
                 0,
                 number(orderItem.quantity) * multiplier,
               );
+              const previouslyReturned = Math.max(
+                0,
+                number(orderItem.returnedQty),
+              );
               deductedQty = Math.min(
-                exportedQty,
-                orderedQty > 0 ? orderedQty : exportedQty,
+                exportedQty + previouslyReturned,
+                orderedQty > 0
+                  ? orderedQty
+                  : exportedQty + previouslyReturned,
               );
               if (deductedQty > 0) {
                 orderItem.deductedQty = deductedQty;
+                const newlyAllocatedExport = Math.max(
+                  0,
+                  deductedQty - previouslyReturned,
+                );
                 exportedQtyByVariant.set(
                   exportKey,
-                  Math.max(0, exportedQty - deductedQty),
+                  Math.max(0, exportedQty - newlyAllocatedExport),
                 );
               }
             }
