@@ -284,7 +284,7 @@ async function resolveReturnStockAsync(req, res) {
 
       message:
         resolution === "RESTOCK"
-          ? "Đã nhập lại hàng tốt vào kho và tạo lô hàng hoàn."
+          ? `Đã nhập ${Number(result.totalRestockedQty || 0)} sản phẩm hàng tốt vào kho và tạo lô RETURN.`
           : "Đã xác nhận không nhập lại kho. Tồn kho không thay đổi.",
 
       data: {
