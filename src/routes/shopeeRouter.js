@@ -16,6 +16,7 @@ const shopeeReturnController = require("../controllers/shopeeReturnController");
 const shopeeChatController = require("../controllers/shopeeChatController");
 const shopeeChatReviewTaskController = require("../controllers/shopeeChatReviewTaskController");
 const adminAuth = [auth, adminOnly];
+const ShopeeOrderNotification = require("../models/ShopeeOrderNotification");
 
 // =====================================================
 // AUTHENTICATION & SHOP MANAGEMENT
@@ -389,4 +390,41 @@ router.post(
   ...adminAuth,
   shopeeReturnController.resolveReturnStockAsync,
 );
+// =====================================================
+// PERSISTENT SHOPEE ORDER NOTIFICATIONS
+// =====================================================
+
+router.get("/notifications", ...adminAuth, async (req, res) => {
+  try {
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
+    const notifications = await ShopeeOrderNotification.find({}).sort({ notifiedAt: -1 }).limit(limit).lean();
+    const unreadCount = await ShopeeOrderNotification.countDocuments({ read: false });
+    return res.json({ success: true, notifications, unreadCount });
+  } catch (error) {
+    console.error("[Shopee Notifications] Load failed:", error);
+    return res.status(500).json({ success: false, message: "Không tải được thông báo Shopee." });
+  }
+});
+
+router.patch("/notifications/:id/read", ...adminAuth, async (req, res) => {
+  try {
+    const notification = await ShopeeOrderNotification.findByIdAndUpdate(req.params.id, { $set: { read: true } }, { new: true }).lean();
+    if (!notification) return res.status(404).json({ success: false, message: "Không tìm thấy thông báo." });
+    return res.json({ success: true, notification });
+  } catch (error) {
+    console.error("[Shopee Notifications] Mark read failed:", error);
+    return res.status(500).json({ success: false, message: "Không thể cập nhật thông báo." });
+  }
+});
+
+router.patch("/notifications/read-all", ...adminAuth, async (req, res) => {
+  try {
+    await ShopeeOrderNotification.updateMany({ read: false }, { $set: { read: true } });
+    return res.json({ success: true });
+  } catch (error) {
+    console.error("[Shopee Notifications] Mark all read failed:", error);
+    return res.status(500).json({ success: false, message: "Không thể cập nhật thông báo." });
+  }
+});
+
 module.exports = router;
