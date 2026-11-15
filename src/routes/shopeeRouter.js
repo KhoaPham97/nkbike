@@ -363,6 +363,13 @@ router.post(
 // Danh sách hàng hoàn
 router.get("/returns", ...adminAuth, shopeeReturnController.getReturnsAsync);
 
+// Đối soát toàn bộ lịch sử phiếu hoàn (chỉ đọc, không cộng kho).
+router.get(
+  "/returns/audit-history",
+  ...adminAuth,
+  shopeeReturnController.auditReturnHistoryAsync,
+);
+
 // Chi tiết một yêu cầu hoàn
 router.get(
   "/returns/:returnSn",
