@@ -1054,8 +1054,37 @@ async function resolveShopeeReturn({
         );
       }
 
-      if (doc.resolution || doc.stockProcessed) {
+      const canRetryZeroRestock =
+        doc.resolution === "RESTOCK" &&
+        number(doc.restockedStockQty) <= 0 &&
+        doc.warehouseStatus === "closed" &&
+        (doc.items || []).some((item) => number(item.goodQty) > 0);
+
+      if ((doc.resolution || doc.stockProcessed) && !canRetryZeroRestock) {
         throw new Error("Phiếu hàng hoàn đã được xử lý trước đó.");
+      }
+
+      // Chỉ mở lại phiếu cũ khi lần xử lý trước ghi nhận 0 hàng nhập,
+      // không có lô RETURN hoặc lịch sử nhập thực tế. Tránh nhập trùng.
+      if (canRetryZeroRestock) {
+        const existingReturnHistory = await InventoryHistory.findOne({
+          referenceType: "shopee_return",
+          referenceCode: doc.returnSn,
+          type: "import",
+          qty: { $gt: 0 },
+        }).session(session);
+
+        const existingReturnBatch = await InventoryBatch.findOne({
+          source: "RETURN",
+          note: { $regex: escapeRegex(doc.returnSn) },
+          importQty: { $gt: 0 },
+        }).session(session);
+
+        if (existingReturnHistory || existingReturnBatch) {
+          throw new Error(
+            "Phiếu đã có lô hoặc lịch sử nhập kho. Hệ thống chặn xử lý lại để tránh cộng tồn kho trùng.",
+          );
+        }
       }
 
       const idempotencyKey = [
@@ -1071,7 +1100,17 @@ async function resolveShopeeReturn({
       }).session(session);
 
       if (duplicate) {
-        throw new Error("Giao dịch kho của phiếu này đã tồn tại.");
+        if (
+          canRetryZeroRestock &&
+          number(duplicate.totalQty) <= 0 &&
+          duplicate.kind === "return_import"
+        ) {
+          await ShopeeStockTransaction.deleteOne({
+            _id: duplicate._id,
+          }).session(session);
+        } else {
+          throw new Error("Giao dịch kho của phiếu này đã tồn tại.");
+        }
       }
 
       const allocations = [];
