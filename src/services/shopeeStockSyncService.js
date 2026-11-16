@@ -311,45 +311,50 @@ function validateExactSku(mapping, variant) {
 async function getInventoryBatchStock({ product, mapping, variant }) {
   const productId = mapping.productId;
   const variantCode = String(mapping.variantCode || "").trim();
+  const variantName = String(variant.name || "").trim();
 
-  let batches = await InventoryBatch.find({
+  if (!variantCode) {
+    throw new Error("Mapping thiếu variantCode nội bộ; không thể xác định tồn kho an toàn.");
+  }
+
+  // Luôn lấy cả lô đã gắn mã và lô cũ chưa có mã.
+  // Trước đây chỉ lấy lô cũ khi KHÔNG có lô mới, làm bỏ sót các lô legacy
+  // nếu một sản phẩm có dữ liệu pha trộn sau nhiều lần nhập.
+  const codedBatches = await InventoryBatch.find({
     productId,
     variantCode,
     isActive: true,
   })
-    .select("remainingQty reservedQty variantName")
+    .select("remainingQty reservedQty variantName variantCode")
     .lean();
 
-  let usedLegacyName = false;
-
-  // Tương thích các lô cũ chưa có variantCode.
-  if (!batches.length && String(variant.name || "").trim()) {
+  let legacyBatches = [];
+  if (variantName) {
     const sameNameVariants = (product.variants || []).filter(
-      (item) => String(item.name || "").trim() === String(variant.name || "").trim(),
+      (item) => String(item.name || "").trim() === variantName,
     );
 
     if (sameNameVariants.length > 1) {
       throw new Error(
-        `Không thể đối chiếu lô cũ theo tên "${variant.name}" vì sản phẩm có nhiều biến thể trùng tên.`,
+        `Tên biến thể "${variantName}" bị trùng; không thể gộp các lô cũ chưa có mã.`,
       );
     }
 
-    batches = await InventoryBatch.find({
+    legacyBatches = await InventoryBatch.find({
       productId,
-      $or: [
-        { variantCode: { $in: ["", null] }, variantName: String(variant.name).trim() },
-      ],
+      variantCode: { $in: ["", null] },
+      variantName,
       isActive: true,
     })
-      .select("remainingQty reservedQty variantName")
+      .select("remainingQty reservedQty variantName variantCode")
       .lean();
-
-    usedLegacyName = batches.length > 0;
   }
+
+  const batches = [...codedBatches, ...legacyBatches];
 
   if (!batches.length) {
     throw new Error(
-      `Không tìm thấy lô tồn kho cho biến thể ${variantCode}. Đã bỏ qua để tránh đẩy tồn 0 sai lên Shopee.`,
+      `Không tìm thấy lô tồn kho cho biến thể ${variantCode}; dừng đồng bộ để tránh đẩy tồn sai.`,
     );
   }
 
@@ -362,22 +367,17 @@ async function getInventoryBatchStock({ product, mapping, variant }) {
     0,
   );
 
-  if (reservedQty > physicalQty) {
-    throw new Error(
-      `Tổng hàng giữ (${reservedQty}) lớn hơn tồn các lô (${physicalQty}) của ${variantCode}. Cần đối soát kho trước khi đồng bộ.`,
-    );
-  }
-
   return {
     physicalQty,
     reservedQty,
     batchCount: batches.length,
-    usedLegacyName,
+    codedBatchCount: codedBatches.length,
+    legacyBatchCount: legacyBatches.length,
+    usedLegacyName: legacyBatches.length > 0,
     productQty: normalizeStock(variant.qty),
     productReservedQty: normalizeStock(variant.reservedQty),
   };
 }
-
 // =====================================================
 // SYNC ONE MAPPING
 // =====================================================
@@ -455,6 +455,17 @@ async function syncOneMapping({ mapping, settings, snapshot, logResult }) {
     targetQty,
     previousShopeeQty,
   });
+
+  // Không được báo thành công hoặc đẩy số tồn sai khi tổng lô lệch
+  // với tồn biến thể chuẩn trong Product.
+  if (
+    physicalQty !== batchStock.productQty ||
+    reservedQty !== batchStock.productReservedQty
+  ) {
+    throw new Error(
+      `Đối soát tồn thất bại ${mapping.variantCode}: tồn lô=${physicalQty}, tồn biến thể=${batchStock.productQty}, giữ theo lô=${reservedQty}, giữ theo biến thể=${batchStock.productReservedQty}, số lô=${batchStock.batchCount} (có mã=${batchStock.codedBatchCount}, lô cũ=${batchStock.legacyBatchCount}). Chưa cập nhật Shopee.`,
+    );
+  }
 
   // Không gọi API cập nhật nếu tồn kho không thay đổi.
   if (previousShopeeQty === targetQty) {
