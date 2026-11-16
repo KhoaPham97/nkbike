@@ -6,6 +6,7 @@ const ShopeeStockSyncSetting = require("../models/ShopeeStockSyncSetting");
 const ShopeeStockSyncLog = require("../models/ShopeeStockSyncLog");
 
 const { Product } = require("../models/products");
+const InventoryBatch = require("../models/InventoryBatch");
 const { callShopeeShopApi } = require("./shopeeService");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -301,6 +302,83 @@ function validateExactSku(mapping, variant) {
 }
 
 // =====================================================
+// INVENTORY BATCH STOCK
+// =====================================================
+
+// Tồn Shopee lấy từ các lô thực tế của đúng biến thể.
+// remainingQty là số còn trong lô; reservedQty là phần đang giữ,
+// vì vậy số có thể bán = tổng remainingQty - tổng reservedQty.
+async function getInventoryBatchStock({ product, mapping, variant }) {
+  const productId = mapping.productId;
+  const variantCode = String(mapping.variantCode || "").trim();
+
+  let batches = await InventoryBatch.find({
+    productId,
+    variantCode,
+    isActive: true,
+  })
+    .select("remainingQty reservedQty variantName")
+    .lean();
+
+  let usedLegacyName = false;
+
+  // Tương thích các lô cũ chưa có variantCode.
+  if (!batches.length && String(variant.name || "").trim()) {
+    const sameNameVariants = (product.variants || []).filter(
+      (item) => String(item.name || "").trim() === String(variant.name || "").trim(),
+    );
+
+    if (sameNameVariants.length > 1) {
+      throw new Error(
+        `Không thể đối chiếu lô cũ theo tên "${variant.name}" vì sản phẩm có nhiều biến thể trùng tên.`,
+      );
+    }
+
+    batches = await InventoryBatch.find({
+      productId,
+      $or: [
+        { variantCode: { $in: ["", null] }, variantName: String(variant.name).trim() },
+      ],
+      isActive: true,
+    })
+      .select("remainingQty reservedQty variantName")
+      .lean();
+
+    usedLegacyName = batches.length > 0;
+  }
+
+  if (!batches.length) {
+    throw new Error(
+      `Không tìm thấy lô tồn kho cho biến thể ${variantCode}. Đã bỏ qua để tránh đẩy tồn 0 sai lên Shopee.`,
+    );
+  }
+
+  const physicalQty = batches.reduce(
+    (sum, batch) => sum + normalizeStock(batch.remainingQty),
+    0,
+  );
+  const reservedQty = batches.reduce(
+    (sum, batch) => sum + normalizeStock(batch.reservedQty),
+    0,
+  );
+
+  if (reservedQty > physicalQty) {
+    throw new Error(
+      `Tổng hàng giữ (${reservedQty}) lớn hơn tồn các lô (${physicalQty}) của ${variantCode}. Cần đối soát kho trước khi đồng bộ.`,
+    );
+  }
+
+  return {
+    physicalQty,
+    reservedQty,
+    batchCount: batches.length,
+    usedLegacyName,
+    productQty: normalizeStock(variant.qty),
+    productReservedQty: normalizeStock(variant.reservedQty),
+  };
+}
+
+// =====================================================
 // SYNC ONE MAPPING
 // =====================================================
 
@@ -325,13 +403,42 @@ async function syncOneMapping({ mapping, settings, snapshot, logResult }) {
 
   validateExactSku(mapping, variant);
 
-  const physicalQty = normalizeStock(variant.qty);
-  const reservedQty = normalizeStock(variant.reservedQty);
-  const bufferQty = normalizeStock(settings.safetyBuffer);
+  const batchStock = await getInventoryBatchStock({
+    product,
+    mapping,
+    variant,
+  });
 
-  const targetQty = getTargetShopeeStock(variant, mapping, bufferQty);
+  const physicalQty = batchStock.physicalQty;
+  const reservedQty = batchStock.reservedQty;
+  const bufferQty = normalizeStock(settings.safetyBuffer);
+  const availableQty = Math.max(0, physicalQty - reservedQty - bufferQty);
+  const multiplier = Math.max(
+    1,
+    Math.floor(Number(mapping.quantityMultiplier) || 1),
+  );
+  const targetQty = Math.floor(availableQty / multiplier);
 
   const previousShopeeQty = findShopeeStock(snapshot, mapping);
+  const stockWarnings = [];
+
+  if (physicalQty !== batchStock.productQty) {
+    stockWarnings.push(
+      `tổng lô=${physicalQty} lệch tồn biến thể=${batchStock.productQty}`,
+    );
+  }
+  if (reservedQty !== batchStock.productReservedQty) {
+    stockWarnings.push(
+      `giữ theo lô=${reservedQty} lệch giữ theo biến thể=${batchStock.productReservedQty}`,
+    );
+  }
+  if (batchStock.usedLegacyName) {
+    stockWarnings.push("đang đối chiếu lô cũ theo tên biến thể");
+  }
+
+  const warningMessage = stockWarnings.length
+    ? ` Cảnh báo đối soát: ${stockWarnings.join("; ")}.`
+    : "";
 
   Object.assign(logResult, {
     shopId: String(mapping.shopId),
@@ -353,7 +460,7 @@ async function syncOneMapping({ mapping, settings, snapshot, logResult }) {
   if (previousShopeeQty === targetQty) {
     logResult.status = "unchanged";
     logResult.syncedShopeeQty = previousShopeeQty;
-    logResult.message = "Tồn kho Shopee đã khớp.";
+    logResult.message = `Tồn kho Shopee đã khớp.${warningMessage}`;
     return;
   }
 
@@ -372,7 +479,7 @@ async function syncOneMapping({ mapping, settings, snapshot, logResult }) {
       logResult.status = "success";
       logResult.syncedShopeeQty = targetQty;
       logResult.requestId = updateResult.requestId;
-      logResult.message = "Đã cập nhật tồn kho Shopee.";
+      logResult.message = `Đã cập nhật tồn kho Shopee.${warningMessage}`;
       logResult.processedAt = new Date();
 
       return;
