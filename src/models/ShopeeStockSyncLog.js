@@ -126,7 +126,7 @@ const ShopeeStockSyncLogSchema = new mongoose.Schema(
   {
     trigger: {
       type: String,
-      enum: ["cron", "manual"],
+      enum: ["cron", "manual", "manual_selected"],
       default: "cron",
       index: true,
     },
