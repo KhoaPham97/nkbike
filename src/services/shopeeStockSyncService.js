@@ -392,7 +392,7 @@ async function syncOneMapping({ mapping, settings, snapshot, logResult }) {
 // MAIN SYNC
 // =====================================================
 
-async function runShopeeStockSync({ trigger = "cron" } = {}) {
+async function runShopeeStockSync({ trigger = "cron", itemIds = null, shopId = null, onlyAllowedStockDeduction = false } = {}) {
   if (isRunning) {
     return {
       success: false,
@@ -442,10 +442,27 @@ async function runShopeeStockSync({ trigger = "cron" } = {}) {
 
     const shopIds = shops.map((shop) => String(shop.shopId));
 
-    const mappings = await ShopeeSkuMapping.find({
-      shopId: { $in: shopIds },
+    const selectedItemIds = Array.isArray(itemIds)
+      ? [...new Set(itemIds.map((id) => String(id || "").trim()).filter(Boolean))]
+      : null;
+
+    if (selectedItemIds && selectedItemIds.length === 0) {
+      throw new Error("Chưa chọn sản phẩm Shopee cần đồng bộ.");
+    }
+
+    const mappingFilter = {
+      shopId: shopId ? String(shopId) : { $in: shopIds },
       isActive: true,
-    }).lean();
+      ...(selectedItemIds ? { itemId: { $in: selectedItemIds } } : {}),
+    };
+
+    const allSelectedMappings = await ShopeeSkuMapping.find(mappingFilter).lean();
+    const blockedMappings = onlyAllowedStockDeduction
+      ? allSelectedMappings.filter((mapping) => mapping.allowStockDeduction !== true)
+      : [];
+    const mappings = onlyAllowedStockDeduction
+      ? allSelectedMappings.filter((mapping) => mapping.allowStockDeduction === true)
+      : allSelectedMappings;
 
     const snapshots = new Map();
 
@@ -454,7 +471,7 @@ async function runShopeeStockSync({ trigger = "cron" } = {}) {
     let successCount = 0;
     let unchangedCount = 0;
     let failedCount = 0;
-    let skippedCount = 0;
+    let skippedCount = blockedMappings.length;
 
     // Lấy snapshot tồn kho Shopee một lần cho mỗi item.
     for (const mapping of mappings) {
@@ -577,6 +594,14 @@ async function runShopeeStockSync({ trigger = "cron" } = {}) {
       skippedCount,
       durationMs,
       results,
+      blockedCount: blockedMappings.length,
+      blockedItems: blockedMappings.map((mapping) => ({
+        itemId: String(mapping.itemId),
+        modelId: String(mapping.modelId || "0"),
+        itemName: mapping.itemName || "",
+        status: "skipped",
+        message: "SKU chưa bật quyền allowStockDeduction.",
+      })),
     };
   } catch (error) {
     if (log?._id) {
