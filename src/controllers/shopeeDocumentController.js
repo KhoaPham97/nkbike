@@ -111,7 +111,7 @@ exports.downloadDocument = async (req, res) => {
     if (!doc) return res.status(404).json({ success: false, message: "Không tìm thấy chứng từ." });
     if (!doc.filePublicId) return res.status(409).json({ success: false, message: "Chứng từ chưa được tải về." });
     configureCloudinary();
-    const url = cloudinary.url(doc.filePublicId, { resource_type: "raw", type: "authenticated", sign_url: true, secure: true, attachment: true });
+    const url = cloudinary.url(doc.filePublicId, { resource_type: "raw", type: "authenticated", sign_url: true, secure: true, flags: "attachment" });
     doc.status = "downloaded"; await doc.save();
     return res.json({ success: true, url, fileName: doc.fileName });
   } catch (e) { return res.status(500).json({ success: false, message: e.message || "Không lấy được link tải." }); }
