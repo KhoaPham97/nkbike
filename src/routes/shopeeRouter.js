@@ -342,6 +342,13 @@ router.post(
   shopeeStockSyncController.runNowAsync,
 );
 
+// Đồng bộ tồn kho các sản phẩm Shopee được chọn
+router.post(
+  "/stock-sync/run-selected",
+  ...adminAuth,
+  shopeeStockSyncController.runSelectedAsync,
+);
+
 // Lịch sử đồng bộ
 router.get(
   "/stock-sync/history",
