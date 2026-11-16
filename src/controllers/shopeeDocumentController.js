@@ -7,7 +7,7 @@ const clean = (v) => String(v ?? "").trim();
 const unwrap = (v) => v?.response || v || {};
 
 function getMonthRange(month) {
-  if (!/^\\d{4}-(0[1-9]|1[0-2])$/.test(String(month || ""))) throw new Error("Tháng phải có định dạng YYYY-MM.");
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(month || ""))) throw new Error("Tháng phải có định dạng YYYY-MM.");
   const [year, m] = String(month).split("-").map(Number);
   const from = Date.UTC(year, m - 1, 1) / 1000 - 25200;
   const to = Date.UTC(year, m, 1) / 1000 - 25200 - 1;
@@ -42,12 +42,12 @@ async function storeRemoteFile(doc, fileLink, fileName) {
   configureCloudinary();
   let parsed;
   try { parsed = new URL(fileLink); } catch { throw new Error("Shopee trả về link file không hợp lệ."); }
-  if (parsed.protocol !== "https:" || !/(^|\\.)shopee\\.(vn|com|co|sg|ph|tw|th|my|id)$/.test(parsed.hostname.toLowerCase())) throw new Error("Từ chối tải file từ tên miền không thuộc Shopee.");
+  if (parsed.protocol !== "https:" || !/(^|\.)shopee\.(vn|com|co|sg|ph|tw|th|my|id)$/.test(parsed.hostname.toLowerCase())) throw new Error("Từ chối tải file từ tên miền không thuộc Shopee.");
   const response = await axios.get(fileLink, { responseType: "arraybuffer", timeout: 90000, maxContentLength: 50 * 1024 * 1024, maxBodyLength: 50 * 1024 * 1024 });
   const buffer = Buffer.from(response.data);
   if (!buffer.length) throw new Error("File chứng từ tải về đang rỗng.");
   const publicId = `shopee_${doc.shopId}_${doc.kind}_${doc.periodKey.replace("-", "_")}`;
-  await new Promise((resolve, reject) => {
+  const uploaded = await new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream({
       resource_type: "raw", type: "authenticated", access_mode: "authenticated",
       folder: `nhatkhang/shopee-documents/${doc.shopId}`, public_id: publicId,
@@ -55,7 +55,7 @@ async function storeRemoteFile(doc, fileLink, fileName) {
     }, (error, result) => error ? reject(error) : resolve(result));
     stream.end(buffer);
   });
-  doc.filePublicId = `nhatkhang/shopee-documents/${doc.shopId}/${publicId}`;
+  doc.filePublicId = uploaded.public_id;
   doc.fileName = clean(fileName) || `${doc.kind}_${doc.periodKey}.zip`;
   doc.status = "ready"; doc.downloadedAt = new Date(); doc.error = "";
   await doc.save();
@@ -71,6 +71,7 @@ async function pollDocument(doc) {
   if ((status === 2 || status === 3) && data.file_link) await storeRemoteFile(doc, data.file_link, data.file_name);
   else if (status === 1) { doc.status = "processing"; await doc.save(); }
   else if (status === 4 || status === 0 || data.error) { doc.status = "failed"; doc.error = data.message || data.error || `Shopee báo trạng thái ${status}`; await doc.save(); }
+  else if (status === 3) { doc.status = "failed"; doc.error = "Shopee đã đánh dấu báo cáo đã tải nhưng không trả link file."; await doc.save(); }
   else { doc.status = "processing"; await doc.save(); }
   return doc;
 }
