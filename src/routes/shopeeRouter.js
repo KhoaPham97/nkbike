@@ -17,6 +17,7 @@ const shopeeChatController = require("../controllers/shopeeChatController");
 const shopeeChatReviewTaskController = require("../controllers/shopeeChatReviewTaskController");
 const adminAuth = [auth, adminOnly];
 const ShopeeOrderNotification = require("../models/ShopeeOrderNotification");
+const shopeeDocumentController = require("../controllers/shopeeDocumentController");
 
 // =====================================================
 // AUTHENTICATION & SHOP MANAGEMENT
@@ -411,6 +412,14 @@ router.post(
   ...adminAuth,
   shopeeReturnController.resyncMarkedReturnsAsync,
 );
+// =====================================================
+// SHOPEE FINANCE DOCUMENTS
+// =====================================================
+router.get("/documents", ...adminAuth, shopeeDocumentController.listDocuments);
+router.post("/documents/sync", ...adminAuth, shopeeDocumentController.syncMonth);
+router.post("/documents/:id/poll", ...adminAuth, shopeeDocumentController.pollOne);
+router.get("/documents/:id/download", ...adminAuth, shopeeDocumentController.downloadDocument);
+
 // =====================================================
 // PERSISTENT SHOPEE ORDER NOTIFICATIONS
 // =====================================================
