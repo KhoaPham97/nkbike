@@ -134,5 +134,6 @@ module.exports = {
   getSettingsAsync,
   updateSettingsAsync,
   runNowAsync,
+  runSelectedAsync,
   getHistoryAsync,
 };
