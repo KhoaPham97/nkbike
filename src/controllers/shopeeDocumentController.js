@@ -17,7 +17,7 @@ function configureCloudinary() {
   if (!process.env.CLOUDINARY_URL && process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET) {
     cloudinary.config({ cloud_name: process.env.CLOUDINARY_CLOUD_NAME, api_key: process.env.CLOUDINARY_API_KEY, api_secret: process.env.CLOUDINARY_API_SECRET, secure: true });
   }
-  if (!process.env.CLOUDINARY_URL && !process.env.CLOUDINARY_CLOUD_NAME) throw new Error("Thiếu cấu hình Cloudinary để lưu file chứng từ.");
+  if (!process.env.CLOUDINARY_URL && !(process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET)) throw new Error("Thiếu CLOUDINARY_URL hoặc bộ CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET để lưu chứng từ.");
 }
 async function createRemote(shopId, kind, range) {
   const statement = kind === "income_statement";
@@ -46,7 +46,7 @@ async function storeRemoteFile(doc, fileLink, fileName) {
   const response = await axios.get(fileLink, { responseType: "arraybuffer", timeout: 90000, maxContentLength: 50 * 1024 * 1024, maxBodyLength: 50 * 1024 * 1024 });
   const buffer = Buffer.from(response.data);
   if (!buffer.length) throw new Error("File chứng từ tải về đang rỗng.");
-  const publicId = `shopee_${doc.shopId}_${doc.kind}_${doc.periodKey.replace("-", "_")}`;
+  const publicId = `shopee_${doc.shopId}_${doc.kind}_${doc.periodKey.replace("-", "_")}.zip`;
   const uploaded = await new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream({
       resource_type: "raw", type: "authenticated", access_mode: "authenticated",
@@ -125,7 +125,7 @@ exports.createPreviousMonthForAllShops = async () => {
   const monthDate = new Date(Date.UTC(vnNow.getUTCFullYear(), vnNow.getUTCMonth() - 1, 1));
   const month = `${monthDate.getUTCFullYear()}-${String(monthDate.getUTCMonth() + 1).padStart(2,"0")}`;
   const range = getMonthRange(month);
-  const shops = await ShopeeShop.find({ status: { $ne: "disconnected" } }).select("shopId").lean();
+  const shops = await ShopeeShop.find({ status: "connected" }).select("shopId").lean();
   for (const shop of shops) {
     for (const kind of ["income_statement","income_report"]) {
       try { await createOrReuse(String(shop.shopId), kind, month, range, "system-cron"); }
