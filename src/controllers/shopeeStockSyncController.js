@@ -78,6 +78,39 @@ async function runNowAsync(req, res) {
   }
 }
 
+// POST /api/shopee/stock-sync/run-selected
+async function runSelectedAsync(req, res) {
+  try {
+    const itemIds = Array.isArray(req.body?.itemIds) ? req.body.itemIds : [];
+    const shopId = String(req.body?.shopId || "").trim();
+
+    if (!shopId) {
+      return res.status(400).json({ success: false, message: "Vui lòng chọn shop Shopee." });
+    }
+    if (!itemIds.length) {
+      return res.status(400).json({ success: false, message: "Vui lòng chọn ít nhất một sản phẩm." });
+    }
+    if (itemIds.length > 100) {
+      return res.status(400).json({ success: false, message: "Mỗi lần chỉ đồng bộ tối đa 100 sản phẩm." });
+    }
+
+    const result = await runShopeeStockSync({
+      trigger: "manual_selected",
+      shopId,
+      itemIds,
+      onlyAllowedStockDeduction: true,
+    });
+
+    return res.json({
+      success: true,
+      message: result.message || "Đã xử lý đồng bộ các sản phẩm được chọn.",
+      data: result,
+    });
+  } catch (error) {
+    return handleError(res, error);
+  }
+}
+
 // GET /api/shopee/stock-sync/history?page=1&limit=20
 async function getHistoryAsync(req, res) {
   try {
