@@ -815,6 +815,25 @@ async function getShopeeReturnDetail({ shopId, returnSn }) {
           returnSn: doc.returnSn,
         });
 
+        if (
+          refreshed &&
+          (refreshed.isReceived ||
+            ["received", "inspected", "restocked", "closed", "partially_restocked"].includes(refreshed.warehouseStatus))
+        ) {
+          const session = await mongoose.startSession();
+          try {
+            await session.withTransaction(async () => {
+              await ensureShopeeReturnReceiptHistory({
+                doc: refreshed,
+                user: { _id: refreshed.receivedBy },
+                session,
+              });
+            });
+          } finally {
+            await session.endSession();
+          }
+        }
+
         return refreshed;
       }
     } catch (error) {
