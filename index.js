@@ -10,6 +10,7 @@ const { startShopeeOrderSyncJob } = require("./src/jobs/shopeeOrderSyncJob");
 const { startShopeeAutoReviewJob } = require("./src/jobs/shopeeAutoReviewJob");
 const { startShopeeReviewSyncJob } = require("./src/jobs/shopeeReviewSyncJob");
 const { startShopeeStockSyncJob } = require("./src/jobs/shopeeStockSyncJob");
+const { startShopeeDocumentJob } = require("./src/jobs/shopeeDocumentJob");
 const chatRoutes = require("./src/routes/chatRoute");
 
 const setupChatSocket = require("./src/socket/chatSocket");
@@ -101,5 +102,12 @@ server.listen(PORT, async () => {
     console.log("[Shopee Stock Sync] Khởi tạo thành công.");
   } catch (error) {
     console.error("[Shopee Stock Sync] Không thể khởi tạo:", error);
+  }
+
+  try {
+    startShopeeDocumentJob();
+    console.log("[Shopee Documents] Khởi tạo thành công.");
+  } catch (error) {
+    console.error("[Shopee Documents] Không thể khởi tạo:", error);
   }
 });
