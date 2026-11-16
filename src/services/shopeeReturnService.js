@@ -825,7 +825,74 @@ async function getShopeeReturnDetail({ shopId, returnSn }) {
     }
   }
 
+  // Tự bổ sung nhật ký cho các phiếu đã nhận từ phiên bản cũ
+  // khi người dùng mở chi tiết; thao tác này không thay đổi tồn kho.
+  if (doc.isReceived || ["received", "inspected", "restocked", "closed", "partially_restocked"].includes(doc.warehouseStatus)) {
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await ensureShopeeReturnReceiptHistory({
+          doc,
+          user: { _id: doc.receivedBy },
+          session,
+        });
+      });
+    } finally {
+      await session.endSession();
+    }
+  }
+
   return doc;
+}
+
+// =====================================================
+// RECEIVE HISTORY
+// =====================================================
+
+// Ghi nhật ký tiếp nhận vào InventoryHistory nhưng không làm biến động tồn.
+async function ensureShopeeReturnReceiptHistory({ doc, user, session }) {
+  for (const item of doc.items || []) {
+    if (!item.productId || !text(item.variantCode)) continue;
+
+    const exists = await InventoryHistory.findOne({
+      type: "adjustment",
+      referenceType: "shopee_return_received",
+      referenceCode: doc.returnSn,
+      productId: item.productId,
+      variantCode: text(item.variantCode),
+    }).session(session);
+
+    if (exists) continue;
+
+    const product = await Product.findById(item.productId).session(session);
+    if (!product) continue;
+
+    const variant = (product.variants || []).find(
+      (row) => text(row.variantCode) === text(item.variantCode),
+    );
+    if (!variant) continue;
+
+    const currentQty = number(variant.qty);
+
+    await new InventoryHistory({
+      type: "adjustment",
+      referenceType: "shopee_return_received",
+      referenceId: doc._id,
+      referenceCode: doc.returnSn,
+      productId: product._id,
+      productTitle: product.title || "",
+      productCode: product.code || "",
+      variantName: variant.name || item.variantName || "",
+      variantCode: text(item.variantCode),
+      qty: 0,
+      beforeQty: currentQty,
+      afterQty: currentQty,
+      note:
+        `Tiếp nhận hàng hoàn Shopee - đơn ${doc.orderSn}, kiện ${doc.packageNumber || doc.returnSn}. Đã nhận ${number(item.requestedQty)}; chưa kiểm hàng và chưa nhập kho.`,
+      createdBy: getUserId(user) || doc.receivedBy || null,
+      created_at: doc.receivedAt || new Date(),
+    }).save({ session });
+  }
 }
 
 // =====================================================
@@ -869,51 +936,7 @@ async function receiveShopeeReturn({ shopId, returnSn, note = "", user }) {
 
       if (text(note)) doc.note = text(note);
 
-      // Ghi nhật ký tiếp nhận cho từng biến thể đã ánh xạ.
-      // Đây là nhật ký quy trình, không phải phiếu nhập: qty = 0
-      // và beforeQty/afterQty bằng nhau nên tuyệt đối không cộng tồn.
-      for (const item of doc.items || []) {
-        if (!item.productId || !text(item.variantCode)) continue;
-
-        const exists = await InventoryHistory.findOne({
-          type: "adjustment",
-          referenceType: "shopee_return_received",
-          referenceCode: doc.returnSn,
-          productId: item.productId,
-          variantCode: text(item.variantCode),
-        }).session(session);
-
-        if (exists) continue;
-
-        const product = await Product.findById(item.productId).session(session);
-        if (!product) continue;
-
-        const variant = (product.variants || []).find(
-          (row) => text(row.variantCode) === text(item.variantCode),
-        );
-        if (!variant) continue;
-
-        const currentQty = number(variant.qty);
-
-        await new InventoryHistory({
-          type: "adjustment",
-          referenceType: "shopee_return_received",
-          referenceId: doc._id,
-          referenceCode: doc.returnSn,
-          productId: product._id,
-          productTitle: product.title || "",
-          productCode: product.code || "",
-          variantName: variant.name || item.variantName || "",
-          variantCode: text(item.variantCode),
-          qty: 0,
-          beforeQty: currentQty,
-          afterQty: currentQty,
-          note:
-            `Tiếp nhận hàng hoàn Shopee - đơn ${doc.orderSn}, kiện ${doc.packageNumber || doc.returnSn}. Đã nhận ${number(item.requestedQty)}; chưa kiểm hàng và chưa nhập kho.`,
-          createdBy: getUserId(user),
-          created_at: new Date(),
-        }).save({ session });
-      }
+      await ensureShopeeReturnReceiptHistory({ doc, user, session });
 
       // Chỉ xác nhận nhận hàng và ghi nhật ký.
       // Tuyệt đối không thay đổi Product.qty tại đây.
