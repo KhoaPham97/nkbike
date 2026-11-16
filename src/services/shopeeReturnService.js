@@ -833,50 +833,98 @@ async function getShopeeReturnDetail({ shopId, returnSn }) {
 // =====================================================
 
 async function receiveShopeeReturn({ shopId, returnSn, note = "", user }) {
-  const doc = await ShopeeReturn.findOne({
-    shopId: String(shopId),
-    returnSn: text(returnSn),
-  });
+  const session = await mongoose.startSession();
+  let result;
 
-  if (!doc) {
-    throw new Error("Không tìm thấy phiếu hàng hoàn.");
+  try {
+    await session.withTransaction(async () => {
+      const doc = await ShopeeReturn.findOne({
+        shopId: String(shopId),
+        returnSn: text(returnSn),
+      }).session(session);
+
+      if (!doc) {
+        throw new Error("Không tìm thấy phiếu hàng hoàn.");
+      }
+
+      if (doc.resolution) {
+        throw new Error("Phiếu này đã được xử lý kho.");
+      }
+
+      if (doc.warehouseStatus === "inspected") {
+        throw new Error("Phiếu đã được kiểm tra.");
+      }
+
+      if (!["waiting", "in_transit", "received"].includes(doc.warehouseStatus)) {
+        throw new Error("Trạng thái hiện tại không thể xác nhận nhận hàng.");
+      }
+
+      if (doc.warehouseStatus !== "received") {
+        doc.warehouseStatus = "received";
+        doc.status = "RECEIVED";
+        doc.isReceived = true;
+        doc.receivedAt = new Date();
+        doc.receivedBy = getUserId(user);
+      }
+
+      if (text(note)) doc.note = text(note);
+
+      // Ghi nhật ký tiếp nhận cho từng biến thể đã ánh xạ.
+      // Đây là nhật ký quy trình, không phải phiếu nhập: qty = 0
+      // và beforeQty/afterQty bằng nhau nên tuyệt đối không cộng tồn.
+      for (const item of doc.items || []) {
+        if (!item.productId || !text(item.variantCode)) continue;
+
+        const exists = await InventoryHistory.findOne({
+          type: "adjustment",
+          referenceType: "shopee_return_received",
+          referenceCode: doc.returnSn,
+          productId: item.productId,
+          variantCode: text(item.variantCode),
+        }).session(session);
+
+        if (exists) continue;
+
+        const product = await Product.findById(item.productId).session(session);
+        if (!product) continue;
+
+        const variant = (product.variants || []).find(
+          (row) => text(row.variantCode) === text(item.variantCode),
+        );
+        if (!variant) continue;
+
+        const currentQty = number(variant.qty);
+
+        await new InventoryHistory({
+          type: "adjustment",
+          referenceType: "shopee_return_received",
+          referenceId: doc._id,
+          referenceCode: doc.returnSn,
+          productId: product._id,
+          productTitle: product.title || "",
+          productCode: product.code || "",
+          variantName: variant.name || item.variantName || "",
+          variantCode: text(item.variantCode),
+          qty: 0,
+          beforeQty: currentQty,
+          afterQty: currentQty,
+          note:
+            `Tiếp nhận hàng hoàn Shopee - đơn ${doc.orderSn}, kiện ${doc.packageNumber || doc.returnSn}. Đã nhận ${number(item.requestedQty)}; chưa kiểm hàng và chưa nhập kho.`,
+          createdBy: getUserId(user),
+          created_at: new Date(),
+        }).save({ session });
+      }
+
+      // Chỉ xác nhận nhận hàng và ghi nhật ký.
+      // Tuyệt đối không thay đổi Product.qty tại đây.
+      await doc.save({ session });
+      result = doc;
+    });
+
+    return result;
+  } finally {
+    await session.endSession();
   }
-
-  if (doc.resolution) {
-    throw new Error("Phiếu này đã được xử lý kho.");
-  }
-
-  if (doc.warehouseStatus === "received") {
-    return doc;
-  }
-
-  if (doc.warehouseStatus === "inspected") {
-    throw new Error("Phiếu đã được kiểm tra.");
-  }
-
-  if (!["waiting", "in_transit"].includes(doc.warehouseStatus)) {
-    throw new Error("Trạng thái hiện tại không thể xác nhận nhận hàng.");
-  }
-
-  doc.warehouseStatus = "received";
-
-  doc.status = "RECEIVED";
-
-  doc.isReceived = true;
-
-  doc.receivedAt = new Date();
-
-  doc.receivedBy = getUserId(user);
-
-  if (text(note)) {
-    doc.note = text(note);
-  }
-
-  // Chỉ xác nhận nhận hàng.
-  // Tuyệt đối không thay đổi Product.qty tại đây.
-  await doc.save();
-
-  return doc;
 }
 
 // =====================================================
