@@ -18,6 +18,12 @@ const inventoryReceiptItemSchema = new mongoose.Schema(
       default: "",
     },
 
+    variantCode: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
     qty: {
       type: Number,
       required: true,
