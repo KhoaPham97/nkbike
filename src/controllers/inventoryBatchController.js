@@ -2617,6 +2617,108 @@ const subtractTotalBatchQtyAsync = async (req, res) => {
     await session.endSession();
   }
 };
+
+/**
+ * Đồng bộ tên Variant của các lô theo variantCode chuẩn trong Product.
+ * Chỉ cập nhật nhãn nhận diện; tuyệt đối không thay đổi số lượng, giá vốn,
+ * reservedQty hoặc variantCode nên không làm dịch chuyển tồn kho/FIFO.
+ */
+const syncBatchVariantsByCodeAsync = async (req, res) => {
+  try {
+    const batches = await InventoryBatch.find({
+      isActive: { $ne: false },
+      variantCode: { $nin: ["", null] },
+    }).select("_id productId batchCode variantCode variantName").lean();
+
+    const productCache = new Map();
+    const report = {
+      scanned: batches.length,
+      updatedBatches: 0,
+      updatedHistories: 0,
+      unchanged: 0,
+      skippedMissingProduct: 0,
+      skippedCodeNotFound: 0,
+      errors: [],
+    };
+
+    for (const batch of batches) {
+      try {
+        const productId = String(batch.productId);
+        let product = productCache.get(productId);
+
+        if (product === undefined) {
+          product = await Product.findById(batch.productId)
+            .select("title variants")
+            .lean();
+          productCache.set(productId, product || null);
+        }
+
+        if (!product) {
+          report.skippedMissingProduct += 1;
+          continue;
+        }
+
+        const code = normalizeVariantCode(batch.variantCode);
+        const matches = getVariants(product).filter(
+          (variant) =>
+            normalizeVariantCode(variant?.variantCode) === code,
+        );
+
+        // Chỉ đồng bộ khi mã là duy nhất trên chính sản phẩm.
+        if (matches.length !== 1) {
+          report.skippedCodeNotFound += 1;
+          continue;
+        }
+
+        const variant = matches[0];
+        const nextName = normalizeVariantName(variant.name);
+        const currentName = normalizeVariantName(batch.variantName);
+
+        if (!nextName || nextName === currentName) {
+          report.unchanged += 1;
+          continue;
+        }
+
+        const updateResult = await InventoryBatch.updateOne(
+          { _id: batch._id, variantCode: code },
+          { $set: { variantName: nextName } },
+        );
+
+        if (!updateResult.modifiedCount) {
+          report.unchanged += 1;
+          continue;
+        }
+
+        report.updatedBatches += 1;
+
+        // Lịch sử gắn với đúng batch cũng cần hiển thị cùng tên Variant.
+        const historyResult = await InventoryHistory.updateMany(
+          { batchId: batch._id },
+          { $set: { variantName: nextName } },
+        );
+        report.updatedHistories += historyResult.modifiedCount || 0;
+      } catch (error) {
+        report.errors.push({
+          batchCode: batch.batchCode || String(batch._id),
+          message: error.message,
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: "Đã đồng bộ tên Variant theo mã Variant.",
+      report,
+    });
+  } catch (error) {
+    console.error("syncBatchVariantsByCodeAsync:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Không thể đồng bộ Variant theo mã.",
+    });
+  }
+};
+
 // =====================================================
 // EXPORT
 // =====================================================
@@ -2633,6 +2735,7 @@ module.exports = {
   importNewBatchAsync,
   importMultipleBatchesAsync,
   syncBatchUnitCosts,
+  syncBatchVariantsByCodeAsync,
   adjustProductActualStockAsync,
   // Thêm dòng này
   updateInventoryBatchRemainingAsync,
