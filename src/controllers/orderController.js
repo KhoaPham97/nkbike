@@ -2221,6 +2221,7 @@ const syncOrderVariantsAsync = async (req, res) => {
     }
 
     let updatedItems = 0;
+    let updatedImages = 0;
     let skippedItems = 0;
 
     for (const item of order.items || []) {
@@ -2237,15 +2238,32 @@ const syncOrderVariantsAsync = async (req, res) => {
       }
 
       const variantName = normalizeVariantName(item.variantName);
-
       const variantCode = normalizeVariantCode(item.variantCode);
+      let variant = null;
 
-      if (!variantName && !variantCode) {
-        skippedItems++;
-        continue;
+      if (variantName || variantCode) {
+        variant = findVariant(product, variantName, variantCode);
       }
 
-      const variant = findVariant(product, variantName, variantCode);
+      // Ưu tiên ảnh riêng của variant, sau đó ảnh đại diện và ảnh đầu
+      // của sản phẩm. Chỉ cập nhật khi tìm được URL ảnh hợp lệ.
+      const productImages = Array.isArray(product.images)
+        ? product.images
+        : [];
+      const imageCandidates = [
+        variant?.thumbnail,
+        variant?.image,
+        product.thumbnail,
+        productImages[0],
+      ];
+      const image = imageCandidates.find(
+        (value) => typeof value === "string" && value.trim(),
+      );
+
+      if (image && item.thumbnail !== image.trim()) {
+        item.thumbnail = image.trim();
+        updatedImages++;
+      }
 
       if (!variant) {
         skippedItems++;
@@ -2253,7 +2271,6 @@ const syncOrderVariantsAsync = async (req, res) => {
       }
 
       const defaultPrice = Number(variant.defaultPrice);
-
       const price = Number(variant.price);
 
       if (!Number.isFinite(defaultPrice) || !Number.isFinite(price)) {
@@ -2262,9 +2279,7 @@ const syncOrderVariantsAsync = async (req, res) => {
       }
 
       item.variantCode = normalizeVariantCode(variant.variantCode);
-
       item.variantName = normalizeVariantName(variant.name);
-
       item.defaultPrice = defaultPrice;
       item.price = price;
       item.total = price * toNumber(item.qty);
@@ -2272,7 +2287,7 @@ const syncOrderVariantsAsync = async (req, res) => {
       updatedItems++;
     }
 
-    if (updatedItems > 0) {
+    if (updatedItems > 0 || updatedImages > 0) {
       calculateOrderTotal(order);
       order.markModified("items");
       await order.save();
@@ -2280,10 +2295,11 @@ const syncOrderVariantsAsync = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: "Đã đồng bộ variantCode và defaultPrice vào đơn hàng",
+      message: "Đã đồng bộ variant, giá và hình ảnh sản phẩm vào đơn hàng",
       data: {
         orderId,
         updatedItems,
+        updatedImages,
         skippedItems,
         order,
       },
