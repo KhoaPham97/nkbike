@@ -15,6 +15,7 @@ const {
   importMultipleBatchesAsync,
   syncBatchUnitCosts,
   syncBatchVariantsByCodeAsync,
+  updateInventoryBatchVariantIdentityAsync,
   updateInventoryBatchRemainingAsync,
   adjustProductActualStockAsync,
   subtractTotalBatchQtyAsync,
@@ -52,6 +53,7 @@ router.post("/import", importNewBatchAsync);
 router.post("/import-multiple", auth, adminAuth, importMultipleBatchesAsync);
 router.post("/sync-costs", auth, syncBatchUnitCosts);
 router.post("/sync-variants-by-code", auth, adminAuth, syncBatchVariantsByCodeAsync);
+router.patch("/:id/variant-identity", auth, adminAuth, updateInventoryBatchVariantIdentityAsync);
 router.patch("/:id/remaining", auth, updateInventoryBatchRemainingAsync);
 router.patch(
   "products/:productId/adjust-actual-stock",
