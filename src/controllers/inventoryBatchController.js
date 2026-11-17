@@ -2627,7 +2627,10 @@ const syncBatchVariantsByCodeAsync = async (req, res) => {
   try {
     const batches = await InventoryBatch.find({
       isActive: { $ne: false },
-      variantCode: { $nin: ["", null] },
+      $or: [
+        { variantCode: { $nin: ["", null] } },
+        { variantName: { $nin: ["", null] } },
+      ],
     }).select("_id productId batchCode variantCode variantName").lean();
 
     const productCache = new Map();
@@ -2659,12 +2662,15 @@ const syncBatchVariantsByCodeAsync = async (req, res) => {
         }
 
         const code = normalizeVariantCode(batch.variantCode);
-        const matches = getVariants(product).filter(
-          (variant) =>
-            normalizeVariantCode(variant?.variantCode) === code,
+        const currentName = normalizeVariantName(batch.variantName);
+
+        // Ưu tiên mã Variant; lô cũ chưa có mã thì chỉ dò theo tên duy nhất.
+        const matches = getVariants(product).filter((variant) =>
+          code
+            ? normalizeVariantCode(variant?.variantCode) === code
+            : normalizeVariantName(variant?.name) === currentName,
         );
 
-        // Chỉ đồng bộ khi mã là duy nhất trên chính sản phẩm.
         if (matches.length !== 1) {
           report.skippedCodeNotFound += 1;
           continue;
@@ -2672,16 +2678,21 @@ const syncBatchVariantsByCodeAsync = async (req, res) => {
 
         const variant = matches[0];
         const nextName = normalizeVariantName(variant.name);
-        const currentName = normalizeVariantName(batch.variantName);
+        const nextCode = normalizeVariantCode(variant.variantCode);
 
-        if (!nextName || nextName === currentName) {
+        if (!nextName || !nextCode) {
+          report.skippedCodeNotFound += 1;
+          continue;
+        }
+
+        if (nextName === currentName && nextCode === code) {
           report.unchanged += 1;
           continue;
         }
 
         const updateResult = await InventoryBatch.updateOne(
-          { _id: batch._id, variantCode: code },
-          { $set: { variantName: nextName } },
+          { _id: batch._id },
+          { $set: { variantName: nextName, variantCode: nextCode } },
         );
 
         if (!updateResult.modifiedCount) {
@@ -2694,7 +2705,7 @@ const syncBatchVariantsByCodeAsync = async (req, res) => {
         // Lịch sử gắn với đúng batch cũng cần hiển thị cùng tên Variant.
         const historyResult = await InventoryHistory.updateMany(
           { batchId: batch._id },
-          { $set: { variantName: nextName } },
+          { $set: { variantName: nextName, variantCode: nextCode } },
         );
         report.updatedHistories += historyResult.modifiedCount || 0;
       } catch (error) {
