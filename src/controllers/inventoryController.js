@@ -88,6 +88,7 @@ const normalizeDraftItems = (items = []) => {
       productCode: item.productCode || "",
       thumbnail: item.thumbnail || "",
       variantName: item.variantName || "",
+      variantCode: item.variantCode || "",
       qty,
       unitCost,
       total: qty * unitCost,
@@ -388,6 +389,7 @@ const createInventoryReceiptAsync = async (req, res) => {
         const qty = toNumber(item.qty);
         const unitCost = toNumber(item.unitCost);
         const variantName = String(item.variantName || "").trim();
+        const requestedVariantCode = String(item.variantCode || "").trim();
 
         if (!productId || !isValidObjectId(productId)) {
           throw new Error("Sản phẩm có ID không hợp lệ");
@@ -415,22 +417,36 @@ const createInventoryReceiptAsync = async (req, res) => {
 
         let variant = null;
 
-        if (variantName) {
-          variant = product.variants?.find(
-            (v) =>
-              String(v.name || "")
-                .trim()
-                .toLowerCase() === variantName.toLowerCase(),
+        if (requestedVariantCode) {
+          const matches = (product.variants || []).filter(
+            (v) => String(v.variantCode || "").trim() === requestedVariantCode,
           );
-
-          if (!variant) {
+          if (matches.length !== 1) {
             throw new Error(
-              `Không tìm thấy phân loại "${variantName}" của ${getProductTitle(
-                product,
-              )}`,
+              `Mã Variant "${requestedVariantCode}" không tồn tại hoặc bị trùng trong sản phẩm ${getProductTitle(product)}`,
             );
           }
+          variant = matches[0];
+          if (variantName && String(variant.name || "").trim() !== variantName) {
+            throw new Error("Tên Variant và mã Variant không khớp");
+          }
+        } else if (variantName) {
+          const matches = (product.variants || []).filter(
+            (v) =>
+              String(v.name || "").trim().toLowerCase() ===
+              variantName.toLowerCase(),
+          );
+          if (matches.length !== 1) {
+            throw new Error(
+              matches.length
+                ? `Tên phân loại "${variantName}" bị trùng; vui lòng cập nhật lại mã Variant.`
+                : `Không tìm thấy phân loại "${variantName}" của ${getProductTitle(product)}`,
+            );
+          }
+          variant = matches[0];
         }
+
+        const variantCode = String(variant?.variantCode || "").trim();
 
         normalized.push({
           product,
@@ -438,7 +454,8 @@ const createInventoryReceiptAsync = async (req, res) => {
           productId,
           productTitle: getProductTitle(product),
           productCode: getProductCode(product),
-          variantName,
+          variantName: String(variant?.name || variantName || "").trim(),
+          variantCode,
           qty,
           unitCost,
           total: qty * unitCost,
@@ -460,6 +477,7 @@ const createInventoryReceiptAsync = async (req, res) => {
           productTitle,
           productCode,
           variantName,
+          variantCode,
           qty,
           unitCost,
           total,
@@ -489,6 +507,7 @@ const createInventoryReceiptAsync = async (req, res) => {
           productTitle,
           productCode,
           variantName,
+          variantCode,
           qty,
           unitCost,
           total,
@@ -509,6 +528,7 @@ const createInventoryReceiptAsync = async (req, res) => {
               productTitle,
               productCode,
               variantName,
+              variantCode,
               qty,
               beforeQty,
               afterQty,
@@ -552,6 +572,7 @@ const createInventoryReceiptAsync = async (req, res) => {
           productTitle,
           productCode,
           variantName,
+          variantCode,
           qty,
           unitCost,
         } = item;
@@ -570,6 +591,7 @@ const createInventoryReceiptAsync = async (req, res) => {
               productTitle,
               productCode,
               variantName,
+              variantCode,
 
               importDate: new Date(),
               importQty: qty,
