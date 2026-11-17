@@ -2103,6 +2103,103 @@ const syncBatchUnitCosts = async (req, res) => {
  *   note: "Kiểm kho thực tế"
  * }
  */
+const updateInventoryBatchVariantIdentityAsync = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const variantName = clean(req.body?.variantName);
+    const variantCode = clean(req.body?.variantCode);
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Mã lô không hợp lệ" });
+    }
+    if (variantName.length > 200 || variantCode.length > 100) {
+      return res.status(400).json({ success: false, message: "Tên hoặc mã Variant quá dài" });
+    }
+    if (Boolean(variantName) !== Boolean(variantCode)) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng nhập đồng thời cả tên và mã Variant, hoặc để trống cả hai.",
+      });
+    }
+
+    const batch = await InventoryBatch.findById(id);
+    if (!batch) {
+      return res.status(404).json({ success: false, message: "Không tìm thấy lô nhập" });
+    }
+    if (batch.isActive === false) {
+      return res.status(400).json({ success: false, message: "Lô đã ngừng hoạt động, không thể sửa Variant" });
+    }
+
+    const product = await Product.findById(batch.productId).select("title name variants");
+    if (!product) {
+      return res.status(404).json({ success: false, message: "Không tìm thấy sản phẩm của lô" });
+    }
+
+    if (variantName || variantCode) {
+      const matches = getVariants(product).filter((variant) =>
+        normalizeVariantName(variant?.name) === variantName &&
+        normalizeVariantCode(variant?.variantCode) === variantCode
+      );
+      if (matches.length !== 1) {
+        return res.status(400).json({
+          success: false,
+          message: "Tên và mã Variant phải khớp chính xác với một phân loại đang có trong sản phẩm. Hãy kiểm tra lại danh sách Variant của sản phẩm.",
+        });
+      }
+    } else if (hasVariants(product)) {
+      return res.status(400).json({
+        success: false,
+        message: "Sản phẩm có phân loại. Không thể xóa tên và mã Variant của lô.",
+      });
+    }
+
+    const oldName = clean(batch.variantName);
+    const oldCode = clean(batch.variantCode);
+    batch.variantName = variantName;
+    batch.variantCode = variantCode;
+    await batch.save();
+
+    const historyResult = await InventoryHistory.updateMany(
+      { batchId: batch._id },
+      { $set: { variantName, variantCode } },
+    );
+
+    if (batch.importReceiptId) {
+      await InventoryReceipt.updateOne(
+        { _id: batch.importReceiptId },
+        {
+          $set: {
+            "items.$[item].variantName": variantName,
+            "items.$[item].variantCode": variantCode,
+          },
+        },
+        {
+          arrayFilters: [
+            { "item.productId": batch.productId, "item.variantName": oldName },
+          ],
+        },
+      );
+    }
+
+    return res.json({
+      success: true,
+      message: "Đã cập nhật tên và mã Variant cho lô.",
+      batch: {
+        _id: batch._id,
+        variantName: batch.variantName,
+        variantCode: batch.variantCode,
+      },
+      updatedHistories: historyResult.modifiedCount || 0,
+    });
+  } catch (error) {
+    console.error("updateInventoryBatchVariantIdentityAsync:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Không thể cập nhật Variant của lô",
+    });
+  }
+};
+
 const updateInventoryBatchRemainingAsync = async (req, res) => {
   const session = await mongoose.startSession();
 
@@ -2747,6 +2844,7 @@ module.exports = {
   importMultipleBatchesAsync,
   syncBatchUnitCosts,
   syncBatchVariantsByCodeAsync,
+  updateInventoryBatchVariantIdentityAsync,
   adjustProductActualStockAsync,
   // Thêm dòng này
   updateInventoryBatchRemainingAsync,
