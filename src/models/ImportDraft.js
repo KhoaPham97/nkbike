@@ -22,6 +22,11 @@ const importDraftItemSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    variantCode: {
+      type: String,
+      default: "",
+      trim: true,
+    },
     qty: {
       type: Number,
       default: 0,
