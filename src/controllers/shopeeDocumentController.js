@@ -287,20 +287,23 @@ function extractRevenueFromText(text, periodKey) {
   return candidates.sort((a,b) => b.score-a.score)[0] || null;
 }
 function extractStatementRevenueFromText(text, periodKey) {
-  const lines = String(text || "").split(/\r?\n/).map(x => x.replace(/\s+/g," ").trim()).filter(Boolean);
-  const label = /(tổng thu nhập đơn hàng|tổng doanh thu đơn hàng|doanh thu đơn hàng|tổng tiền hàng|gross order income|order income|gross sales|total sales|buyer paid)/i;
-  const excluded = /(hoàn tiền|refund|phí|fee|commission|payout|đối soát|thanh toán thực nhận|net income)/i;
-  const found = [];
-  const moneyPattern = /-?\(?\d[\d.,]*\)?\s*(?:₫|đ|vnd)?/gi;
-  for (let i=0;i<lines.length;i+=1) {
-    if (!label.test(lines[i]) || excluded.test(lines[i])) continue;
-    const window = [lines[i], lines[i+1] || "", lines[i+2] || ""].join(" ");
-    const matches = window.match(moneyPattern) || [];
-    const values = matches.map(parseMoney).filter(v=>v!==null && Math.abs(v)>=1000);
-    if (values.length) found.push({ periodKey, total: values[values.length-1], count: 1, label: lines[i] });
+  const raw=String(text||"").replace(/\s+/g," ").trim();
+  if(!raw)return null;
+  const label=/(tổng thu nhập đơn hàng|tổng doanh thu đơn hàng|doanh thu đơn hàng|tổng tiền hàng|gross order income|order income|gross sales|total sales|buyer paid)/ig;
+  const excluded=/(hoàn tiền|refund|phí|fee|commission|payout|đối soát|thanh toán thực nhận|net income)/i;
+  const moneyPattern=/-?\(?\d[\d.,]*\)?\s*(?:₫|đ|vnd)?/gi;
+  const found=[];
+  let match;
+  while((match=label.exec(raw))!==null){
+    const context=raw.slice(Math.max(0,match.index-35),match.index+match[0].length+180);
+    if(excluded.test(context))continue;
+    const after=raw.slice(match.index+match[0].length,match.index+match[0].length+150);
+    const matches=after.match(moneyPattern)||[];
+    const values=matches.map(parseMoney).filter(v=>v!==null&&Math.abs(v)>=1000);
+    if(values.length)found.push({periodKey,total:values[0],count:1,label:match[0],priority:/tổng|total/i.test(match[0])?2:1});
   }
-  if (!found.length) return null;
-  found.sort((a,b)=>Number(/tổng|total/i.test(b.label))-Number(/tổng|total/i.test(a.label)));
+  if(!found.length)return null;
+  found.sort((a,b)=>b.priority-a.priority);
   return found[0];
 }
 exports.getRevenueChart = async (req, res) => {
