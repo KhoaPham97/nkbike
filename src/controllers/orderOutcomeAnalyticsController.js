@@ -26,7 +26,7 @@ const VIETNAM_PROVINCES = [
 const normalizeAddressText = (value) =>
   String(value || "")
     .normalize("NFD")
-    .replace(/[\\u0300-\\u036f]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/đ/g, "d")
     .replace(/Đ/g, "D")
     .toLowerCase()
@@ -35,7 +35,7 @@ const normalizeAddressText = (value) =>
 
 const cleanProvince = (value) => {
   const text = String(value || "").trim();
-  if (!text || /\\*{2,}|x{3,}/i.test(text) || /^(việt nam|viet nam|vietnam)$/i.test(text)) return "";
+  if (!text || /\*{2,}|x{3,}/i.test(text) || /^(việt nam|viet nam|vietnam)$/i.test(text)) return "";
   return text;
 };
 
@@ -46,7 +46,7 @@ const findKnownProvince = (values = []) => {
     .sort((a, b) => normalizeAddressText(b).length - normalizeAddressText(a).length);
   for (const province of candidates) {
     const normalized = normalizeAddressText(province);
-    if (new RegExp(`(^| )${normalized.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}( |$)`).test(combined)) {
+    if ((` ${combined} `).includes(` ${normalized} `)) {
       return province;
     }
   }
