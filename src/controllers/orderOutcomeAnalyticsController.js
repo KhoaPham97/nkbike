@@ -3,8 +3,14 @@ const ShopeeOrder = require("../models/ShopeeOrder");
 const ShopeeReturn = require("../models/ShopeeReturn");
 
 const getProvince = (address = "") => {
-  const parts = String(address).split(",").map((part) => part.trim()).filter(Boolean);
-  return parts.length ? parts[parts.length - 1] : "Không xác định";
+  const parts = String(address)
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => !/^(việt nam|viet nam|vietnam)$/i.test(part));
+  if (!parts.length) return "Không xác định";
+  // Địa chỉ giao hàng thường kết thúc bằng tỉnh/thành; bỏ hậu tố quốc gia nếu có.
+  return parts[parts.length - 1];
 };
 
 const isCancelled = (status = "") =>
