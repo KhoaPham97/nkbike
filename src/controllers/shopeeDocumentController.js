@@ -194,7 +194,7 @@ exports.pollOne = async (req, res) => {
   try {
     const doc = await ShopeeDocument.findOne({ _id: req.params.id, shopId: clean(req.body.shopId || req.query.shopId) });
     if (!doc) return res.status(404).json({ success: false, message: "Không tìm thấy chứng từ." });
-    if (doc.filePublicId && ["ready","downloaded"].includes(doc.status)) return res.json({ success: true, data: doc });
+    if (doc.filePublicId && doc.htmlContent && ["ready","downloaded"].includes(doc.status)) return res.json({ success: true, data: doc });
     return res.json({ success: true, data: await pollDocument(doc) });
   } catch (e) { return res.status(400).json({ success: false, message: e.message || "Không kiểm tra được trạng thái." }); }
 };
@@ -222,14 +222,24 @@ exports.downloadDocument = async (req, res) => {
 
 exports.viewDocument = async (req, res) => {
   try {
-    const doc = await ShopeeDocument.findOne({
+    let doc = await ShopeeDocument.findOne({
       _id: req.params.id,
       shopId: clean(req.query.shopId || req.query.shop_id),
-    }).select("kind periodKey fileName status htmlContent extractedText htmlGeneratedAt conversionError").lean();
+    });
     if (!doc) return res.status(404).json({ success: false, message: "Không tìm thấy chứng từ." });
     if (!["ready", "downloaded"].includes(doc.status)) return res.status(409).json({ success: false, message: "Chứng từ chưa được tải hoàn tất từ Shopee." });
-    if (!doc.htmlContent) return res.status(422).json({ success: false, message: doc.conversionError || "Chứng từ chưa có bản xem HTML." });
-    return res.json({ success: true, data: doc });
+    // Documents downloaded before HTML preview was introduced are converted lazily
+    // by asking Shopee for the completed report link again.
+    if (!doc.htmlContent && doc.remoteId) {
+      await pollDocument(doc);
+      doc = await ShopeeDocument.findById(doc._id);
+    }
+    if (!doc?.htmlContent) return res.status(422).json({ success: false, message: doc?.conversionError || "Shopee không còn cung cấp file để tạo bản xem HTML. Hãy đồng bộ lại chứng từ của tháng này." });
+    return res.json({ success: true, data: {
+      kind: doc.kind, periodKey: doc.periodKey, fileName: doc.fileName,
+      htmlContent: doc.htmlContent, extractedText: doc.extractedText,
+      htmlGeneratedAt: doc.htmlGeneratedAt,
+    } });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message || "Không mở được chứng từ." });
   }
