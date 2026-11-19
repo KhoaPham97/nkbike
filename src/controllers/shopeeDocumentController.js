@@ -6,6 +6,87 @@ const { callShopeeShopApi } = require("../services/shopeeService");
 const clean = (v) => String(v ?? "").trim();
 const unwrap = (v) => v?.response || v || {};
 
+const yauzl = require("yauzl");
+const XLSX = require("xlsx");
+const escapeHtml = (v) => String(v ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+function readZipEntries(buffer) {
+  return new Promise((resolve,reject) => {
+    yauzl.fromBuffer(buffer,{lazyEntries:true,decodeStrings:true},(error,zip) => {
+      if(error) return reject(error);
+      const entries=[];
+      zip.readEntry();
+      zip.on("entry",(entry) => {
+        const name=String(entry.fileName||"");
+        if(/\/$/.test(name)||name.startsWith("__MACOSX/")) return zip.readEntry();
+        zip.openReadStream(entry,(streamError,stream) => {
+          if(streamError) return reject(streamError);
+          const chunks=[]; let size=0;
+          stream.on("data",(chunk) => { size+=chunk.length; if(size>30*1024*1024){stream.destroy(new Error("Tệp con trong ZIP vượt quá giới hạn 30 MB."));return;} chunks.push(chunk); });
+          stream.on("error",reject);
+          stream.on("end",() => { entries.push({name,buffer:Buffer.concat(chunks)}); zip.readEntry(); });
+        });
+      });
+      zip.on("end",() => resolve(entries));
+      zip.on("error",reject);
+    });
+  });
+}
+function htmlDocument(title,body) {
+  return '<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+escapeHtml(title)+'</title><style>'+
+  '*{box-sizing:border-box}body{margin:0;background:#eef2f7;color:#172033;font:14px Arial,sans-serif;padding:20px}h1{font-size:18px;margin:0 0 16px}.pdf-page{position:relative;background:#fff;margin:0 auto 18px;box-shadow:0 2px 12px #17203318;overflow:hidden}.pdf-page span{position:absolute;white-space:pre;transform-origin:left top;color:#111}.sheet{background:#fff;margin:0 0 20px;padding:16px;border:1px solid #dbe3ed;overflow:auto}.sheet h2{font-size:15px;margin:0 0 12px}.sheet table{border-collapse:collapse;width:100%;font-size:12px}.sheet td,.sheet th{border:1px solid #cbd5e1;padding:6px 8px;vertical-align:top;white-space:pre-wrap}.sheet th{background:#eff4fa;font-weight:700}.empty{background:#fff;padding:20px;border-radius:10px;color:#64748b}@media(max-width:700px){body{padding:8px}.sheet{padding:8px}}'+
+  '</style></head><body><h1>'+escapeHtml(title)+'</h1>'+body+'</body></html>';
+}
+async function pdfBufferToHtml(buffer) {
+  const pdfjs=await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const pdf=await pdfjs.getDocument({data:new Uint8Array(buffer),useSystemFonts:true,disableFontFace:true,isEvalSupported:false}).promise;
+  const pages=[]; const textParts=[];
+  for(let pageNo=1;pageNo<=pdf.numPages;pageNo+=1){
+    const page=await pdf.getPage(pageNo); const viewport=page.getViewport({scale:1.15}); const content=await page.getTextContent();
+    const spans=[]; const lines=[];
+    for(const item of content.items||[]){
+      if(!item.str) continue;
+      const transform=item.transform||[]; const x=Number(transform[4]||0)*1.15;
+      const y=viewport.height-Number(transform[5]||0)*1.15; const fontSize=Math.max(6,Math.abs(Number(transform[3]||10)*1.15));
+      spans.push('<span style="left:'+x.toFixed(1)+'px;top:'+Math.max(0,y-fontSize).toFixed(1)+'px;font-size:'+fontSize.toFixed(1)+'px">'+escapeHtml(item.str)+'</span>');
+      lines.push(item.str);
+    }
+    textParts.push(lines.join(" "));
+    pages.push('<section class="pdf-page" style="width:'+viewport.width.toFixed(1)+'px;height:'+viewport.height.toFixed(1)+'px">'+spans.join("")+'</section>');
+  }
+  return {html:pages.join(""),text:textParts.join("\n\n")};
+}
+function workbookBufferToHtml(buffer) {
+  const workbook=XLSX.read(buffer,{type:"buffer",cellDates:true}); const sections=[]; const textParts=[];
+  for(const sheetName of workbook.SheetNames){
+    const rows=XLSX.utils.sheet_to_json(workbook.Sheets[sheetName],{header:1,raw:false,defval:""});
+    textParts.push("BẢNG: "+sheetName+"\n"+rows.map(row=>row.join("\t")).join("\n"));
+    const tableRows=rows.map((row,index)=>'<tr>'+row.map(cell=>'<'+(index===0?"th":"td")+'>'+escapeHtml(cell)+'</'+(index===0?"th":"td")+'>').join("")+'</tr>').join("");
+    sections.push('<section class="sheet"><h2>'+escapeHtml(sheetName)+'</h2><table>'+tableRows+'</table></section>');
+  }
+  return {html:sections.join(""),text:textParts.join("\n\n")};
+}
+async function buildHtmlPreview(buffer,fileName) {
+  const files=[];
+  if(buffer.subarray(0,4).toString("hex")==="504b0304") files.push(...await readZipEntries(buffer));
+  else files.push({name:clean(fileName||"Shopee document"),buffer});
+  const sections=[]; const text=[];
+  for(const file of files){
+    const ext=String(file.name).toLowerCase().split(".").pop();
+    if(ext==="pdf"||file.buffer.subarray(0,4).toString()==="%PDF"){
+      const parsed=await pdfBufferToHtml(file.buffer);
+      sections.push('<section><h2>'+escapeHtml(file.name)+'</h2>'+parsed.html+'</section>'); text.push(parsed.text);
+    }else if(["xlsx","xls"].includes(ext)){
+      const parsed=workbookBufferToHtml(file.buffer);
+      sections.push('<section><h2>'+escapeHtml(file.name)+'</h2>'+parsed.html+'</section>'); text.push(parsed.text);
+    }else if(ext==="csv"||ext==="txt"){
+      const raw=file.buffer.toString("utf8"); sections.push('<section class="sheet"><h2>'+escapeHtml(file.name)+'</h2><pre>'+escapeHtml(raw)+'</pre></section>'); text.push(raw);
+    }
+  }
+  if(!sections.length) sections.push('<div class="empty">Đã lưu file gốc nhưng chưa tìm thấy PDF, Excel hoặc CSV có thể chuyển đổi trong gói chứng từ này.</div>');
+  return {html:htmlDocument(clean(fileName||"Chứng từ Shopee"),sections.join("")),text:text.join("\n\n")};
+}
+
+
 function getMonthRange(month) {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(month || ""))) throw new Error("Tháng phải có định dạng YYYY-MM.");
   const [year, m] = String(month).split("-").map(Number);
@@ -56,8 +137,20 @@ async function storeRemoteFile(doc, fileLink, fileName) {
     stream.end(buffer);
   });
   doc.filePublicId = uploaded.public_id;
-  doc.fileName = clean(fileName) || `${doc.kind}_${doc.periodKey}.zip`;
+  doc.fileName = clean(fileName) || doc.kind + "_" + doc.periodKey + ".zip";
   doc.status = "ready"; doc.downloadedAt = new Date(); doc.error = "";
+  try {
+    const preview = await buildHtmlPreview(buffer, doc.fileName);
+    doc.htmlContent = preview.html;
+    doc.extractedText = preview.text;
+    doc.htmlGeneratedAt = new Date();
+    doc.conversionError = "";
+  } catch (conversionError) {
+    doc.htmlContent = "";
+    doc.extractedText = "";
+    doc.conversionError = conversionError.message || "Không chuyển đổi được chứng từ.";
+    console.error("[Shopee Documents] HTML conversion failed:", doc.fileName, doc.conversionError);
+  }
   await doc.save();
 }
 async function pollDocument(doc) {
@@ -126,6 +219,22 @@ exports.downloadDocument = async (req, res) => {
     return res.json({ success: true, url, fileName: doc.fileName });
   } catch (e) { return res.status(500).json({ success: false, message: e.message || "Không lấy được link tải." }); }
 };
+
+exports.viewDocument = async (req, res) => {
+  try {
+    const doc = await ShopeeDocument.findOne({
+      _id: req.params.id,
+      shopId: clean(req.query.shopId || req.query.shop_id),
+    }).select("kind periodKey fileName status htmlContent extractedText htmlGeneratedAt conversionError").lean();
+    if (!doc) return res.status(404).json({ success: false, message: "Không tìm thấy chứng từ." });
+    if (!["ready", "downloaded"].includes(doc.status)) return res.status(409).json({ success: false, message: "Chứng từ chưa được tải hoàn tất từ Shopee." });
+    if (!doc.htmlContent) return res.status(422).json({ success: false, message: doc.conversionError || "Chứng từ chưa có bản xem HTML." });
+    return res.json({ success: true, data: doc });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message || "Không mở được chứng từ." });
+  }
+};
+
 exports.pollPendingDocuments = async () => {
   const docs = await ShopeeDocument.find({ status: { $in: ["requested","processing"] } }).limit(30);
   for (const doc of docs) { try { await pollDocument(doc); } catch (e) { doc.lastCheckedAt = new Date(); doc.error = e.message || String(e); await doc.save(); console.error("[Shopee Documents] poll failed", doc.shopId, doc.error); } }
