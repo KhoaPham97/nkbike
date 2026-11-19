@@ -287,24 +287,53 @@ function extractRevenueFromText(text, periodKey) {
   return candidates.sort((a,b) => b.score-a.score)[0] || null;
 }
 function extractStatementRevenueFromText(text, periodKey) {
-  const raw=String(text||"").replace(/\s+/g," ").trim();
-  if(!raw)return null;
-  const label=/(tổng thu nhập đơn hàng|tổng doanh thu đơn hàng|doanh thu đơn hàng|tổng tiền hàng|gross order income|order income|gross sales|total sales|buyer paid)/ig;
-  const excluded=/(hoàn tiền|refund|phí|fee|commission|payout|đối soát|thanh toán thực nhận|net income)/i;
-  const moneyPattern=/-?\(?\d[\d.,]*\)?\s*(?:₫|đ|vnd)?/gi;
-  const found=[];
-  let match;
-  while((match=label.exec(raw))!==null){
-    const context=raw.slice(Math.max(0,match.index-35),match.index+match[0].length+180);
-    if(excluded.test(context))continue;
-    const after=raw.slice(match.index+match[0].length,match.index+match[0].length+150);
-    const matches=after.match(moneyPattern)||[];
-    const values=matches.map(parseMoney).filter(v=>v!==null&&Math.abs(v)>=1000);
-    if(values.length)found.push({periodKey,total:values[0],count:1,label:match[0],priority:/tổng|total/i.test(match[0])?2:1});
+  // Shopee's Vietnamese monthly statement uses "Tổng tiền sản phẩm"
+  // for product revenue after refunds. "Tổng thanh toán đã chuyển" is
+  // net payout after fees/taxes and must not be treated as revenue.
+  const raw = String(text || "").replace(/\u00a0/g, " ").replace(/[\t ]+/g, " ").trim();
+  if (!raw) return null;
+
+  const findAmountAfter = (label) => {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(escaped + "[\\s:：]*([−–-]?\\s*₫?\\s*\\(?\\d[\\d.,\\s]*\\)?)", "i");
+    const match = raw.match(re);
+    if (!match) return null;
+    const value = parseMoney(match[1].replace(/[−–]/g, "-"));
+    return value === null ? null : value;
+  };
+
+  // Prefer the explicit after-refund total. It is present in the summary
+  // section and may also repeat in the detail table; only read the first.
+  const preferredLabels = [
+    "Tổng tiền sản phẩm",
+    "Total product amount",
+    "Total product sales"
+  ];
+  for (const label of preferredLabels) {
+    const value = findAmountAfter(label);
+    if (value !== null) return { periodKey, total: value, count: 1, label, priority: 10 };
   }
-  if(!found.length)return null;
-  found.sort((a,b)=>b.priority-a.priority);
-  return found[0];
+
+  // Fallback for older statement layouts: calculate product price less
+  // refunded amount, rather than using the net payout after fees and tax.
+  const productPrice = findAmountAfter("Giá sản phẩm");
+  const refunded = findAmountAfter("Số tiền hoàn lại");
+  if (productPrice !== null) {
+    return {
+      periodKey,
+      total: productPrice - Math.abs(refunded || 0),
+      count: 1,
+      label: "Giá sản phẩm - Số tiền hoàn lại",
+      priority: 5
+    };
+  }
+
+  // English/older Shopee layouts.
+  for (const label of ["Gross order income", "Gross sales", "Total sales", "Order income"]) {
+    const value = findAmountAfter(label);
+    if (value !== null) return { periodKey, total: value, count: 1, label, priority: 3 };
+  }
+  return null;
 }
 exports.getRevenueChart = async (req, res) => {
   try {
