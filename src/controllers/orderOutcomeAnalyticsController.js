@@ -1,15 +1,33 @@
 const ShopeeOrder = require("../models/ShopeeOrder");
 const ShopeeReturn = require("../models/ShopeeReturn");
 
-const getProvince = (address = "") => {
-  const parts = String(address)
+const cleanProvince = (value) => {
+  const text = String(value || "").trim();
+  if (!text || /\*{2,}|x{3,}/i.test(text) || /^(việt nam|viet nam|vietnam)$/i.test(text)) return "";
+  return text;
+};
+
+const getProvince = (order = {}) => {
+  const rawAddress = order.rawData?.recipient_address || order.rawData?.recipientAddress || {};
+  // Shopee trả về các thành phần địa chỉ riêng; state thường là tỉnh/thành tại Việt Nam.
+  const structured = [
+    order.recipientProvince,
+    rawAddress.state,
+    rawAddress.province,
+    rawAddress.province_name,
+    rawAddress.city,
+  ];
+  for (const candidate of structured) {
+    const province = cleanProvince(candidate);
+    if (province) return province;
+  }
+
+  // Chỉ dùng full_address làm phương án dự phòng nếu phần cuối không bị Shopee che.
+  const parts = String(order.recipientAddress || rawAddress.full_address || "")
     .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .filter((part) => !/^(việt nam|viet nam|vietnam)$/i.test(part));
-  if (!parts.length) return "Không xác định";
-  // Địa chỉ giao hàng thường kết thúc bằng tỉnh/thành; bỏ hậu tố quốc gia nếu có.
-  return parts[parts.length - 1];
+    .map((part) => cleanProvince(part))
+    .filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : "Chưa xác định";
 };
 
 const isCancelled = (status = "") =>
@@ -31,7 +49,7 @@ exports.getOrderOutcomeByProvince = async (req, res) => {
     }
     const dateFilter = { $gte: start, $lte: end };
     const shopeeOrders = await ShopeeOrder.find({ createTime: dateFilter })
-      .select("orderSn orderStatus recipientAddress createTime")
+      .select("orderSn orderStatus recipientAddress recipientProvince rawData createTime")
       .lean();
     const shopeeSns = shopeeOrders.map((order) => order.orderSn).filter(Boolean);
     const returns = shopeeSns.length
@@ -40,15 +58,15 @@ exports.getOrderOutcomeByProvince = async (req, res) => {
       : [];
     const returnedSns = new Set(returns.filter(isReturned).map((item) => String(item.orderSn)));
     const byProvince = new Map();
-    const add = (address, outcome) => {
-      const province = getProvince(address);
+    const add = (order, outcome) => {
+      const province = getProvince(order);
       const row = byProvince.get(province) || { province, totalOrders: 0, cancelledOrders: 0, returnedOrders: 0 };
       row.totalOrders += 1;
       if (outcome.cancelled) row.cancelledOrders += 1;
       if (outcome.returned) row.returnedOrders += 1;
       byProvince.set(province, row);
     };
-    shopeeOrders.forEach((order) => add(order.recipientAddress, {
+    shopeeOrders.forEach((order) => add(order, {
       cancelled: isCancelled(order.orderStatus),
       returned: returnedSns.has(String(order.orderSn)),
     }));
