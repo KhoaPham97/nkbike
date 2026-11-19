@@ -289,12 +289,14 @@ exports.getRevenueChart = async (req, res) => {
   try {
     const shopId = clean(req.query.shopId || req.query.shop_id);
     if (!shopId) return res.status(400).json({ success: false, message: "Vui lòng chọn shop Shopee." });
-    const docs = await ShopeeDocument.find({ shopId, status: { $in: ["ready","downloaded"] } })
-      .select("kind periodKey fileName extractedText conversionError")
-      .sort({ periodKey: 1 }).lean();
+    const [documentCount, detailed] = await Promise.all([
+      ShopeeDocument.countDocuments({ shopId, status: { $in: ["ready","downloaded"] } }),
+      ShopeeDocument.find({ shopId, kind: "income_report", status: { $in: ["ready","downloaded"] } })
+        .select("kind periodKey fileName extractedText conversionError")
+        .sort({ periodKey: 1 }).limit(120).lean(),
+    ]);
     // The detailed income report is the source of transaction rows. The PDF statement
     // is a monthly summary and is deliberately excluded to avoid double counting.
-    const detailed = docs.filter(d => d.kind === "income_report");
     const parsed = detailed.map(doc => ({ doc, result: extractRevenueFromText(doc.extractedText, doc.periodKey) }));
     const byMonth = new Map();
     for (const item of parsed) {
@@ -308,7 +310,7 @@ exports.getRevenueChart = async (req, res) => {
     const months = [...byMonth.values()].sort((a,b) => a.month.localeCompare(b.month));
     const totalRevenue = months.reduce((sum, item) => sum + item.revenue, 0);
     return res.json({ success: true, data: {
-      totalRevenue, months, documents: docs.length, detailedFiles: detailed.length,
+      totalRevenue, months, documents: documentCount, detailedFiles: detailed.length,
       parsedFiles: parsed.filter(x => x.result).length,
       unparsedFiles: parsed.filter(x => !x.result).map(x => ({ periodKey: x.doc.periodKey, fileName: x.doc.fileName, reason: x.doc.conversionError || "Không tìm thấy cột doanh thu phù hợp trong dữ liệu đã trích xuất." })),
       source: "income_report",
