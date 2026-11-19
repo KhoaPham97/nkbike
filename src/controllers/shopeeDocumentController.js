@@ -42,15 +42,18 @@ async function pdfBufferToHtml(buffer) {
   const pages=[]; const textParts=[];
   for(let pageNo=1;pageNo<=pdf.numPages;pageNo+=1){
     const page=await pdf.getPage(pageNo); const viewport=page.getViewport({scale:1.15}); const content=await page.getTextContent();
-    const spans=[]; const lines=[];
+    const spans=[]; const lineMap=new Map();
     for(const item of content.items||[]){
       if(!item.str) continue;
       const transform=item.transform||[]; const x=Number(transform[4]||0)*1.15;
       const y=viewport.height-Number(transform[5]||0)*1.15; const fontSize=Math.max(6,Math.abs(Number(transform[3]||10)*1.15));
       spans.push('<span style="left:'+x.toFixed(1)+'px;top:'+Math.max(0,y-fontSize).toFixed(1)+'px;font-size:'+fontSize.toFixed(1)+'px">'+escapeHtml(item.str)+'</span>');
-      lines.push(item.str);
+      const lineKey=Math.round(y/3)*3;
+      if(!lineMap.has(lineKey)) lineMap.set(lineKey,[]);
+      lineMap.get(lineKey).push({x,text:item.str});
     }
-    textParts.push(lines.join(" "));
+    const pageLines=[...lineMap.entries()].sort((a,b)=>a[0]-b[0]).map(([,items])=>items.sort((a,b)=>a.x-b.x).map(x=>x.text).join(" ").replace(/\s+/g," ").trim()).filter(Boolean);
+    textParts.push(pageLines.join("\n"));
     pages.push('<section class="pdf-page" style="width:'+viewport.width.toFixed(1)+'px;height:'+viewport.height.toFixed(1)+'px">'+spans.join("")+'</section>');
   }
   return {html:pages.join(""),text:textParts.join("\n\n")};
@@ -275,50 +278,70 @@ function extractRevenueFromText(text, periodKey) {
     if (headerIndex < 0) continue;
     let total = 0, count = 0;
     for (const line of lines.slice(headerIndex + 1)) {
-      const cells = line.split("\t");
-      const value = parseMoney(cells[amountIndex]);
-      if (value === null) continue;
-      const normalized = line.toLowerCase();
-      if (/\b(total|subtotal|tổng cộng|tổng doanh thu)\b/.test(normalized)) continue;
+      const value = parseMoney(line.split("\t")[amountIndex]);
+      if (value === null || /\b(total|subtotal|tổng cộng|tổng doanh thu)\b/.test(line.toLowerCase())) continue;
       total += value; count += 1;
     }
     if (count) candidates.push({ periodKey, total, count, score });
   }
   return candidates.sort((a,b) => b.score-a.score)[0] || null;
 }
+function extractStatementRevenueFromText(text, periodKey) {
+  const lines = String(text || "").split(/\r?\n/).map(x => x.replace(/\s+/g," ").trim()).filter(Boolean);
+  const label = /(tổng thu nhập đơn hàng|tổng doanh thu đơn hàng|doanh thu đơn hàng|tổng tiền hàng|gross order income|order income|gross sales|total sales|buyer paid)/i;
+  const excluded = /(hoàn tiền|refund|phí|fee|commission|payout|đối soát|thanh toán thực nhận|net income)/i;
+  const found = [];
+  const moneyPattern = /-?\(?\d[\d.,]*\)?\s*(?:₫|đ|vnd)?/gi;
+  for (let i=0;i<lines.length;i+=1) {
+    if (!label.test(lines[i]) || excluded.test(lines[i])) continue;
+    const window = [lines[i], lines[i+1] || "", lines[i+2] || ""].join(" ");
+    const matches = window.match(moneyPattern) || [];
+    const values = matches.map(parseMoney).filter(v=>v!==null && Math.abs(v)>=1000);
+    if (values.length) found.push({ periodKey, total: values[values.length-1], count: 1, label: lines[i] });
+  }
+  if (!found.length) return null;
+  found.sort((a,b)=>Number(/tổng|total/i.test(b.label))-Number(/tổng|total/i.test(a.label)));
+  return found[0];
+}
 exports.getRevenueChart = async (req, res) => {
   try {
     const shopId = clean(req.query.shopId || req.query.shop_id);
-    if (!shopId) return res.status(400).json({ success: false, message: "Vui lòng chọn shop Shopee." });
-    const [documentCount, detailed] = await Promise.all([
-      ShopeeDocument.countDocuments({ shopId, status: { $in: ["ready","downloaded"] } }),
-      ShopeeDocument.find({ shopId, kind: "income_report", status: { $in: ["ready","downloaded"] } })
-        .select("kind periodKey fileName extractedText conversionError")
-        .sort({ periodKey: 1 }).limit(120).lean(),
+    if (!shopId) return res.status(400).json({ success:false, message:"Vui lòng chọn shop Shopee." });
+    const [documentCount,detailed,statements] = await Promise.all([
+      ShopeeDocument.countDocuments({shopId,status:{$in:["ready","downloaded"]}}),
+      ShopeeDocument.find({shopId,kind:"income_report",status:{$in:["ready","downloaded"]}})
+        .select("kind periodKey fileName extractedText conversionError").sort({periodKey:1}).limit(120).lean(),
+      ShopeeDocument.find({shopId,kind:"income_statement",status:{$in:["ready","downloaded"]}})
+        .select("kind periodKey fileName extractedText conversionError").sort({periodKey:1}).limit(120).lean(),
     ]);
-    // The detailed income report is the source of transaction rows. The PDF statement
-    // is a monthly summary and is deliberately excluded to avoid double counting.
-    const parsed = detailed.map(doc => ({ doc, result: extractRevenueFromText(doc.extractedText, doc.periodKey) }));
-    const byMonth = new Map();
-    for (const item of parsed) {
-      if (!item.result) continue;
-      const current = byMonth.get(item.doc.periodKey) || { month: item.doc.periodKey, revenue: 0, transactions: 0, files: 0 };
-      current.revenue += item.result.total;
-      current.transactions += item.result.count;
-      current.files += 1;
-      byMonth.set(item.doc.periodKey, current);
-    }
-    const months = [...byMonth.values()].sort((a,b) => a.month.localeCompare(b.month));
-    const totalRevenue = months.reduce((sum, item) => sum + item.revenue, 0);
-    return res.json({ success: true, data: {
-      totalRevenue, months, documents: documentCount, detailedFiles: detailed.length,
-      parsedFiles: parsed.filter(x => x.result).length,
-      unparsedFiles: parsed.filter(x => !x.result).map(x => ({ periodKey: x.doc.periodKey, fileName: x.doc.fileName, reason: x.doc.conversionError || "Không tìm thấy cột doanh thu phù hợp trong dữ liệu đã trích xuất." })),
-      source: "income_report",
+    const detailedParsed=detailed.map(doc=>({doc,result:extractRevenueFromText(doc.extractedText,doc.periodKey)}));
+    const statementParsed=statements.map(doc=>({doc,result:extractStatementRevenueFromText(doc.extractedText,doc.periodKey)}));
+    const byMonth=new Map();
+    const add=(month,key,result)=>{
+      if(!result)return;
+      const current=byMonth.get(month)||{month,detailedRevenue:0,statementRevenue:null,transactions:0,detailedFiles:0,statementFiles:0,difference:null};
+      if(key==="detailed"){current.detailedRevenue+=result.total;current.transactions+=result.count;current.detailedFiles+=1;}
+      else{current.statementRevenue=result.total;current.statementFiles+=1;}
+      byMonth.set(month,current);
+    };
+    detailedParsed.forEach(x=>add(x.doc.periodKey,"detailed",x.result));
+    statementParsed.forEach(x=>add(x.doc.periodKey,"statement",x.result));
+    const months=[...byMonth.values()].sort((a,b)=>a.month.localeCompare(b.month)).map(x=>({...x,difference:x.statementRevenue===null?null:x.detailedFiles?x.detailedRevenue-x.statementRevenue:null}));
+    const totalDetailedRevenue=months.reduce((sum,x)=>sum+x.detailedRevenue,0);
+    const totalStatementRevenue=months.filter(x=>x.statementRevenue!==null).reduce((sum,x)=>sum+x.statementRevenue,0);
+    return res.json({success:true,data:{
+      totalRevenue:totalDetailedRevenue,totalDetailedRevenue,totalStatementRevenue,months,documents:documentCount,
+      detailedFiles:detailed.length,statementFiles:statements.length,
+      parsedFiles:detailedParsed.filter(x=>x.result).length,parsedStatementFiles:statementParsed.filter(x=>x.result).length,
+      unparsedFiles:[
+        ...detailedParsed.filter(x=>!x.result).map(x=>({kind:"income_report",periodKey:x.doc.periodKey,fileName:x.doc.fileName,reason:x.doc.conversionError||"Không nhận diện được cột doanh thu trong Excel."})),
+        ...statementParsed.filter(x=>!x.result).map(x=>({kind:"income_statement",periodKey:x.doc.periodKey,fileName:x.doc.fileName,reason:x.doc.conversionError||"Không nhận diện được dòng tổng doanh thu trong PDF; có thể PDF là bản scan hoặc cách trình bày khác."}))
+      ],
+      source:"income_report+income_statement"
     }});
-  } catch (error) {
-    console.error("[Shopee Documents] Revenue chart failed:", error);
-    return res.status(500).json({ success: false, message: error.message || "Không tổng hợp được doanh thu từ chứng từ." });
+  } catch(error) {
+    console.error("[Shopee Documents] Revenue chart failed:",error);
+    return res.status(500).json({success:false,message:error.message||"Không tổng hợp được doanh thu từ chứng từ."});
   }
 };
 
