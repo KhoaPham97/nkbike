@@ -147,6 +147,12 @@ const shopeeOrderSchema = new mongoose.Schema(
       index: true,
     },
 
+    buyerUserId: {
+      type: String,
+      default: "",
+      index: true,
+    },
+
     buyerUsername: {
       type: String,
       default: "",
