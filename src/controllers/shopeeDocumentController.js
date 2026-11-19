@@ -248,6 +248,77 @@ exports.viewDocument = async (req, res) => {
   }
 };
 
+
+function parseMoney(value) {
+  let s = String(value ?? "").trim().replace(/[₫đ\s]/gi, "");
+  if (!s || s === "-" || s === "--") return null;
+  if (/^\(.*\)$/.test(s)) s = "-" + s.slice(1, -1);
+  s = s.replace(/[^0-9,.-]/g, "");
+  if (!s || !/[0-9]/.test(s)) return null;
+  if (s.includes(",") && s.includes(".")) s = s.lastIndexOf(",") > s.lastIndexOf(".") ? s.replace(/\./g, "").replace(",", ".") : s.replace(/,/g, "");
+  else if (s.includes(",")) s = s.replace(/,/g, "");
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+function extractRevenueFromText(text, periodKey) {
+  const blocks = String(text || "").split(/\n\s*\n/);
+  const candidates = [];
+  for (const block of blocks) {
+    const lines = block.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    let headerIndex = -1, amountIndex = -1, score = 0;
+    for (let i = 0; i < Math.min(lines.length, 30); i += 1) {
+      const cells = lines[i].split("\t").map(x => x.trim().toLowerCase());
+      const idx = cells.findIndex(x => /(order income|gross sales|sales amount|order amount|buyer paid|doanh thu|tiền hàng|giá trị đơn hàng|tổng tiền hàng)/i.test(x) && !/(refund|hoàn|fee|phí|commission|payout|settlement|đối soát)/i.test(x));
+      if (idx >= 0 && cells.length >= 2) { headerIndex = i; amountIndex = idx; score = 10 + cells.length; break; }
+    }
+    if (headerIndex < 0) continue;
+    let total = 0, count = 0;
+    for (const line of lines.slice(headerIndex + 1)) {
+      const cells = line.split("\t");
+      const value = parseMoney(cells[amountIndex]);
+      if (value === null) continue;
+      const normalized = line.toLowerCase();
+      if (/\b(total|subtotal|tổng cộng|tổng doanh thu)\b/.test(normalized)) continue;
+      total += value; count += 1;
+    }
+    if (count) candidates.push({ periodKey, total, count, score });
+  }
+  return candidates.sort((a,b) => b.score-a.score)[0] || null;
+}
+exports.getRevenueChart = async (req, res) => {
+  try {
+    const shopId = clean(req.query.shopId || req.query.shop_id);
+    if (!shopId) return res.status(400).json({ success: false, message: "Vui lòng chọn shop Shopee." });
+    const docs = await ShopeeDocument.find({ shopId, status: { $in: ["ready","downloaded"] } })
+      .select("kind periodKey fileName extractedText conversionError")
+      .sort({ periodKey: 1 }).lean();
+    // The detailed income report is the source of transaction rows. The PDF statement
+    // is a monthly summary and is deliberately excluded to avoid double counting.
+    const detailed = docs.filter(d => d.kind === "income_report");
+    const parsed = detailed.map(doc => ({ doc, result: extractRevenueFromText(doc.extractedText, doc.periodKey) }));
+    const byMonth = new Map();
+    for (const item of parsed) {
+      if (!item.result) continue;
+      const current = byMonth.get(item.doc.periodKey) || { month: item.doc.periodKey, revenue: 0, transactions: 0, files: 0 };
+      current.revenue += item.result.total;
+      current.transactions += item.result.count;
+      current.files += 1;
+      byMonth.set(item.doc.periodKey, current);
+    }
+    const months = [...byMonth.values()].sort((a,b) => a.month.localeCompare(b.month));
+    const totalRevenue = months.reduce((sum, item) => sum + item.revenue, 0);
+    return res.json({ success: true, data: {
+      totalRevenue, months, documents: docs.length, detailedFiles: detailed.length,
+      parsedFiles: parsed.filter(x => x.result).length,
+      unparsedFiles: parsed.filter(x => !x.result).map(x => ({ periodKey: x.doc.periodKey, fileName: x.doc.fileName, reason: x.doc.conversionError || "Không tìm thấy cột doanh thu phù hợp trong dữ liệu đã trích xuất." })),
+      source: "income_report",
+    }});
+  } catch (error) {
+    console.error("[Shopee Documents] Revenue chart failed:", error);
+    return res.status(500).json({ success: false, message: error.message || "Không tổng hợp được doanh thu từ chứng từ." });
+  }
+};
+
 exports.pollPendingDocuments = async () => {
   const docs = await ShopeeDocument.find({ status: { $in: ["requested","processing"] } }).limit(30);
   for (const doc of docs) { try { await pollDocument(doc); } catch (e) { doc.lastCheckedAt = new Date(); doc.error = e.message || String(e); await doc.save(); console.error("[Shopee Documents] poll failed", doc.shopId, doc.error); } }
