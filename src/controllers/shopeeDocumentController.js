@@ -257,6 +257,7 @@ function parseMoney(value) {
   if (!s || !/[0-9]/.test(s)) return null;
   if (s.includes(",") && s.includes(".")) s = s.lastIndexOf(",") > s.lastIndexOf(".") ? s.replace(/\./g, "").replace(",", ".") : s.replace(/,/g, "");
   else if (s.includes(",")) s = s.replace(/,/g, "");
+  else if (/^-?\\d{1,3}(?:\\.\\d{3})+$/.test(s)) s = s.replace(/\\./g, "");
   const n = Number(s);
   return Number.isFinite(n) ? n : null;
 }
