@@ -1,94 +1,37 @@
 const ShopeeOrder = require("../models/ShopeeOrder");
 const ShopeeReturn = require("../models/ShopeeReturn");
 
-// Tên tỉnh/thành hiện hành và tên địa giới cũ để xử lý cả đơn cũ.
-const VIETNAM_PROVINCES = [
-  "An Giang", "Bà Rịa - Vũng Tàu", "Bắc Giang", "Bắc Kạn", "Bạc Liêu",
-  "Bắc Ninh", "Bến Tre", "Bình Định", "Bình Dương", "Bình Phước",
-  "Bình Thuận", "Cà Mau", "Cần Thơ", "Cao Bằng", "Đà Nẵng", "Đắk Lắk",
-  "Đắk Nông", "Điện Biên", "Đồng Nai", "Đồng Tháp", "Gia Lai", "Hà Giang",
-  "Hà Nam", "Hà Nội", "Hà Tĩnh", "Hải Dương", "Hải Phòng", "Hậu Giang",
-  "Hòa Bình", "Hồ Chí Minh", "Hưng Yên", "Khánh Hòa", "Kiên Giang",
-  "Kon Tum", "Lai Châu", "Lâm Đồng", "Lạng Sơn", "Lào Cai", "Long An",
-  "Nam Định", "Nghệ An", "Ninh Bình", "Ninh Thuận", "Phú Thọ", "Phú Yên",
-  "Quảng Bình", "Quảng Nam", "Quảng Ngãi", "Quảng Ninh", "Quảng Trị",
-  "Sóc Trăng", "Sơn La", "Tây Ninh", "Thái Bình", "Thái Nguyên",
-  "Thanh Hóa", "Thừa Thiên Huế", "Tiền Giang", "Trà Vinh", "Tuyên Quang",
-  "Vĩnh Long", "Vĩnh Phúc", "Yên Bái",
-  // Tên tỉnh/thành sau sắp xếp địa giới năm 2025.
-  "Đắk Lắk", "Lâm Đồng", "Gia Lai", "Đồng Nai", "Tây Ninh", "Cần Thơ",
-  "Đồng Tháp", "Vĩnh Long", "An Giang", "Cà Mau", "Bắc Ninh", "Hưng Yên",
-  "Ninh Bình", "Phú Thọ", "Thái Nguyên", "Quảng Ngãi", "Khánh Hòa",
-  "Lào Cai", "Tuyên Quang", "Hải Phòng", "Đà Nẵng", "Quảng Trị",
-  "Hồ Chí Minh", "Huế"
-];
-
-const normalizeAddressText = (value) =>
-  String(value || "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/đ/g, "d")
-    .replace(/Đ/g, "D")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-
-const cleanProvince = (value) => {
-  const text = String(value || "").trim();
-  if (!text || /\*{2,}|x{3,}/i.test(text) || /^(việt nam|viet nam|vietnam)$/i.test(text)) return "";
-  return text;
-};
-
-const findKnownProvince = (values = []) => {
-  const combined = normalizeAddressText(values.filter(Boolean).join(" "));
-  if (!combined) return "";
-  const candidates = [...new Set(VIETNAM_PROVINCES)]
-    .sort((a, b) => normalizeAddressText(b).length - normalizeAddressText(a).length);
-  for (const province of candidates) {
-    const normalized = normalizeAddressText(province);
-    if ((` ${combined} `).includes(` ${normalized} `)) {
-      return province;
-    }
-  }
-  // Các cách viết tắt phổ biến của TP.HCM và TP.Hà Nội.
-  if (/(^| )(tp hcm|tphcm|hcm|sai gon)( |$)/.test(combined)) return "Hồ Chí Minh";
-  if (/(^| )(tp ha noi|tphn)( |$)/.test(combined)) return "Hà Nội";
-  return "";
-};
-
-const getProvince = (order = {}) => {
-  const rawAddress = order.rawData?.recipient_address || order.rawData?.recipientAddress || {};
-  const candidates = [
-    order.recipientProvince,
-    rawAddress.state,
-    rawAddress.province,
-    rawAddress.province_name,
-    rawAddress.city,
-    rawAddress.full_address,
-    rawAddress.address,
-    order.recipientAddress,
-  ];
-
-  // Tìm theo danh sách địa danh trên toàn bộ chuỗi, không mặc định tỉnh luôn nằm cuối.
-  const knownProvince = findKnownProvince(candidates);
-  if (knownProvince) return knownProvince;
-
-  // Nếu Shopee có trả riêng state nhưng không thuộc danh sách địa danh VN.
-  for (const candidate of [order.recipientProvince, rawAddress.state, rawAddress.province, rawAddress.province_name]) {
-    const province = cleanProvince(candidate);
-    if (province) return province;
-  }
-  return "Chưa xác định";
-};
-
 const isCancelled = (status = "") =>
   /CANCEL/i.test(String(status)) || /HỦY|HUY/i.test(String(status));
 
-const isReturned = (record) => {
+const isActiveCustomerReturn = (record = {}) => {
   const status = String(record.status || record.shopeeReturnStatus || record.shopeeStatus || "").toUpperCase();
   return record.returnType === "CUSTOMER_RETURN" &&
     !["CANCELLED", "CANCEL", "REJECTED", "REQUEST_CANCELLED"].includes(status);
 };
+
+const rate = (numerator, denominator) =>
+  denominator ? Number((numerator / denominator * 100).toFixed(2)) : 0;
+
+const clean = (value) => String(value || "").trim();
+
+const getBuyer = (order = {}) => {
+  const raw = order.rawData || {};
+  const buyerUserId = clean(order.buyerUserId || raw.buyer_user_id || raw.buyerUserId);
+  const buyerUsername = clean(order.buyerUsername || raw.buyer_username || raw.buyerUsername);
+  const key = buyerUserId || buyerUsername || "unknown";
+  return {
+    key,
+    buyerUserId,
+    buyerUsername: buyerUsername || (buyerUserId ? `User ${buyerUserId}` : "Không xác định"),
+  };
+};
+
+const getProductKey = (item = {}) =>
+  clean(item.productId || item.itemId || item.variationSku || item.itemSku || item.itemName || "unknown");
+
+const getReturnedQty = (returnItem = {}) =>
+  Math.max(0, Number(returnItem.receivedQty || 0));
 
 exports.getOrderOutcomeByProvince = async (req, res) => {
   try {
@@ -98,51 +41,128 @@ exports.getOrderOutcomeByProvince = async (req, res) => {
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
       return res.status(400).json({ success: false, message: "Khoảng ngày không hợp lệ" });
     }
-    const dateFilter = { $gte: start, $lte: end };
-    const shopeeOrders = await ShopeeOrder.find({ createTime: dateFilter })
-      .select("orderSn orderStatus recipientAddress recipientProvince rawData createTime")
+
+    // Chỉ truy vấn ShopeeOrder; tuyệt đối không gộp đơn nội bộ.
+    const shopeeOrders = await ShopeeOrder.find({ createTime: { $gte: start, $lte: end } })
+      .select("orderSn orderStatus buyerUserId buyerUsername items createTime rawData")
       .lean();
-    const shopeeSns = shopeeOrders.map((order) => order.orderSn).filter(Boolean);
-    const returns = shopeeSns.length
-      ? await ShopeeReturn.find({ orderSn: { $in: shopeeSns }, returnType: "CUSTOMER_RETURN" })
-          .select("orderSn returnType status shopeeReturnStatus shopeeStatus").lean()
+
+    const orderSns = shopeeOrders.map((order) => order.orderSn).filter(Boolean);
+    const returnRecords = orderSns.length
+      ? await ShopeeReturn.find({ orderSn: { $in: orderSns }, returnType: "CUSTOMER_RETURN" })
+          .select("orderSn buyerUsername status shopeeReturnStatus shopeeStatus items returnSn returnReason reason")
+          .lean()
       : [];
-    const returnedSns = new Set(returns.filter(isReturned).map((item) => String(item.orderSn)));
-    const byProvince = new Map();
-    const add = (order, outcome) => {
-      const province = getProvince(order);
-      const row = byProvince.get(province) || { province, totalOrders: 0, cancelledOrders: 0, returnedOrders: 0 };
-      row.totalOrders += 1;
-      if (outcome.cancelled) row.cancelledOrders += 1;
-      if (outcome.returned) row.returnedOrders += 1;
-      byProvince.set(province, row);
-    };
-    shopeeOrders.forEach((order) => add(order, {
-      cancelled: isCancelled(order.orderStatus),
-      returned: returnedSns.has(String(order.orderSn)),
-    }));
-    const rows = [...byProvince.values()].map((row) => ({
+
+    const activeReturns = returnRecords.filter(isActiveCustomerReturn);
+    const returnsByOrder = new Map();
+    activeReturns.forEach((record) => {
+      const key = String(record.orderSn);
+      if (!returnsByOrder.has(key)) returnsByOrder.set(key, []);
+      returnsByOrder.get(key).push(record);
+    });
+
+    const byBuyer = new Map();
+    const byProduct = new Map();
+    let cancelledOrders = 0;
+    let returnedOrders = 0;
+    let soldQty = 0;
+    let returnedQty = 0;
+
+    for (const order of shopeeOrders) {
+      const orderSn = String(order.orderSn || "");
+      const cancelled = isCancelled(order.orderStatus);
+      const orderReturns = returnsByOrder.get(orderSn) || [];
+      const returned = orderReturns.length > 0;
+      if (cancelled) cancelledOrders += 1;
+      if (returned) returnedOrders += 1;
+
+      const buyer = getBuyer(order);
+      const buyerRow = byBuyer.get(buyer.key) || {
+        ...buyer, totalOrders: 0, cancelledOrders: 0, returnedOrders: 0, orderSns: [],
+      };
+      buyerRow.totalOrders += 1;
+      if (cancelled) buyerRow.cancelledOrders += 1;
+      if (returned) buyerRow.returnedOrders += 1;
+      buyerRow.orderSns.push(orderSn);
+      if (!buyerRow.buyerUsername || buyerRow.buyerUsername === "Không xác định") {
+        const returnBuyer = orderReturns.find((item) => clean(item.buyerUsername));
+        if (returnBuyer) buyerRow.buyerUsername = clean(returnBuyer.buyerUsername);
+      }
+      byBuyer.set(buyer.key, buyerRow);
+
+      const returnItems = orderReturns.flatMap((record) => record.items || []);
+      for (const item of order.items || []) {
+        const quantity = Math.max(0, Number(item.quantity || 0));
+        soldQty += quantity;
+        const productKey = getProductKey(item);
+        const productRow = byProduct.get(productKey) || {
+          key: productKey,
+          productId: item.productId || null,
+          itemId: clean(item.itemId),
+          itemSku: clean(item.variationSku || item.itemSku),
+          productName: clean(item.itemName) || "Sản phẩm chưa có tên",
+          modelName: clean(item.modelName),
+          soldQty: 0,
+          returnedQty: 0,
+          returnedOrderCount: 0,
+          orderSns: [],
+        };
+        productRow.soldQty += quantity;
+        productRow.orderSns.push(orderSn);
+
+        const matchingReturns = returnItems.filter((returnedItem) => {
+          const sameItem = clean(returnedItem.itemId) && clean(returnedItem.itemId) === clean(item.itemId);
+          const sameModel = clean(returnedItem.modelId) && clean(returnedItem.modelId) === clean(item.modelId);
+          const sameSku = clean(returnedItem.variationSku || returnedItem.itemSku) &&
+            clean(returnedItem.variationSku || returnedItem.itemSku) === clean(item.variationSku || item.itemSku);
+          return (sameItem && (!clean(item.modelId) || sameModel)) || sameSku;
+        });
+        const qtyFromReturnRecords = matchingReturns.reduce((sum, returnedItem) => sum + getReturnedQty(returnedItem), 0);
+        // Fallback cho dữ liệu kho cũ đã ghi nhận số lượng nhận hoàn trên đơn.
+        const qtyFromOrder = Number(item.returnedQty || 0);
+        const qty = Math.min(quantity, Math.max(qtyFromReturnRecords, qtyFromOrder));
+        if (qty > 0) {
+          productRow.returnedQty += qty;
+          productRow.returnedOrderCount += 1;
+          returnedQty += qty;
+        }
+        byProduct.set(productKey, productRow);
+      }
+    }
+
+    const buyers = [...byBuyer.values()].map((row) => ({
       ...row,
-      cancellationRate: row.totalOrders ? Number((row.cancelledOrders / row.totalOrders * 100).toFixed(2)) : 0,
-      returnRate: row.totalOrders ? Number((row.returnedOrders / row.totalOrders * 100).toFixed(2)) : 0,
-    })).sort((a, b) => b.totalOrders - a.totalOrders);
-    const totals = rows.reduce((sum, row) => ({
-      totalOrders: sum.totalOrders + row.totalOrders,
-      cancelledOrders: sum.cancelledOrders + row.cancelledOrders,
-      returnedOrders: sum.returnedOrders + row.returnedOrders,
-    }), { totalOrders: 0, cancelledOrders: 0, returnedOrders: 0 });
-    res.json({
+      cancellationRate: rate(row.cancelledOrders, row.totalOrders),
+      returnRate: rate(row.returnedOrders, row.totalOrders),
+    })).sort((a, b) => (b.returnRate + b.cancellationRate) - (a.returnRate + a.cancellationRate));
+
+    const products = [...byProduct.values()].map((row) => ({
+      ...row,
+      returnRate: rate(row.returnedQty, row.soldQty),
+    })).sort((a, b) => b.returnRate - a.returnRate || b.returnedQty - a.returnedQty);
+
+    const totals = {
+      totalOrders: shopeeOrders.length,
+      cancelledOrders,
+      returnedOrders,
+      soldQty,
+      returnedQty,
+    };
+
+    return res.json({
       success: true,
       data: {
         totals,
-        cancellationRate: totals.totalOrders ? Number((totals.cancelledOrders / totals.totalOrders * 100).toFixed(2)) : 0,
-        returnRate: totals.totalOrders ? Number((totals.returnedOrders / totals.totalOrders * 100).toFixed(2)) : 0,
-        provinces: rows,
+        cancellationRate: rate(cancelledOrders, shopeeOrders.length),
+        returnRate: rate(returnedOrders, shopeeOrders.length),
+        buyerStats: buyers,
+        productStats: products,
         period: { fromDate: start, toDate: end },
       },
     });
   } catch (error) {
     console.error("ORDER OUTCOME ANALYTICS:", error);
-    res.status(500).json({ success: false, message: "Không thể tải thống kê hủy/trả hàng" });
+    return res.status(500).json({ success: false, message: "Không thể tải thống kê hủy/trả hàng" });
   }
 };
