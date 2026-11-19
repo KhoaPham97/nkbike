@@ -167,6 +167,14 @@ const shopeeOrderSchema = new mongoose.Schema(
       default: "",
     },
 
+    // Tỉnh/thành lấy từ trường cấu trúc recipient_address của Shopee,
+    // không phụ thuộc full_address có bị ẩn thông tin hay không.
+    recipientProvince: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
     paymentMethod: {
       type: String,
       default: "",
