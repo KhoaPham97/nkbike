@@ -173,7 +173,7 @@ exports.listDocuments = async (req, res) => {
     const shopId = clean(req.query.shopId || req.query.shop_id);
     if (!shopId) return res.status(400).json({ success: false, message: "Vui lòng chọn shop Shopee." });
     const query = { shopId }; if (req.query.month) query.periodKey = clean(req.query.month);
-    const data = await ShopeeDocument.find(query).sort({ periodKey: -1, kind: 1 }).limit(200).lean();
+    const data = (await ShopeeDocument.find(query).select("-htmlContent -extractedText").sort({ periodKey: -1, kind: 1 }).limit(200).lean()).map((doc) => ({ ...doc, htmlAvailable: Boolean(doc.htmlGeneratedAt && !doc.conversionError) }));
     return res.json({ success: true, data });
   } catch (e) { return res.status(500).json({ success: false, message: e.message || "Không tải được chứng từ." }); }
 };
