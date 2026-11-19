@@ -111,7 +111,17 @@ exports.downloadDocument = async (req, res) => {
     if (!doc) return res.status(404).json({ success: false, message: "Không tìm thấy chứng từ." });
     if (!doc.filePublicId) return res.status(409).json({ success: false, message: "Chứng từ chưa được tải về." });
     configureCloudinary();
-    const url = cloudinary.url(doc.filePublicId, { resource_type: "raw", type: "authenticated", sign_url: true, secure: true, flags: "attachment" });
+    // Authenticated raw files (especially ZIP archives) should use Cloudinary's
+    // private download endpoint rather than a delivery URL. The latter can be
+    // rejected by Cloudinary's raw-file access checks even when sign_url is set.
+    const format = (String(doc.fileName || "").split(".").pop() || "zip").toLowerCase();
+    const publicId = String(doc.filePublicId || "").replace(/\\.[a-z0-9]{1,8}$/i, "");
+    const url = cloudinary.utils.private_download_url(publicId, format, {
+      resource_type: "raw",
+      type: "authenticated",
+      attachment: true,
+      expires_at: Math.floor(Date.now() / 1000) + 60 * 60,
+    });
     doc.status = "downloaded"; await doc.save();
     return res.json({ success: true, url, fileName: doc.fileName });
   } catch (e) { return res.status(500).json({ success: false, message: e.message || "Không lấy được link tải." }); }
