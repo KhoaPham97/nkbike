@@ -66,6 +66,7 @@ const shopeeInventoryRouter = require("./src/routes/shopeeInventoryRouter");
 const skuRoutes = require("./src/routes/skuRoutes");
 const shopeeReviewRoutes = require("./src/routes/shopeeReviewRoutes");
 const mediaRoutes = require("./src/routes/mediaRoute");
+const orderOutcomeAnalyticsRoute = require("./src/routes/orderOutcomeAnalyticsRoute");
 
 // Connect to MongoDB
 require("./src/db/mongoose");
@@ -80,6 +81,7 @@ app.use(stripeCheckoutRoute);
 app.use(paypalCheckoutRoute);
 // Keep the singular route for existing clients and expose the plural alias used by Zalo.
 app.use("/api/order", orderRoute);
+app.use("/api/admin/order-outcomes", orderOutcomeAnalyticsRoute);
 app.use("/api/orders", orderRoute);
 app.use("/api/customers", customerRouter);
 app.use("/api/inventory", inventoryRouter);
