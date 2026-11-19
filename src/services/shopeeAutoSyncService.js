@@ -193,6 +193,12 @@ function normalizeOrder(order) {
     recipientPhone: toText(recipient.phone || order.recipientPhone),
 
     recipientAddress: toText(recipient.full_address || order.recipientAddress),
+    recipientProvince: toText(
+      recipient.state ||
+      recipient.province ||
+      recipient.province_name ||
+      order.recipientProvince
+    ),
 
     paymentMethod: toText(order.payment_method || order.paymentMethod),
 
@@ -381,6 +387,7 @@ async function upsertShopeeOrder(shopId, normalized) {
     recipientName: normalized.recipientName,
     recipientPhone: normalized.recipientPhone,
     recipientAddress: normalized.recipientAddress,
+    recipientProvince: normalized.recipientProvince,
 
     paymentMethod: normalized.paymentMethod,
     totalAmount: normalized.totalAmount,
