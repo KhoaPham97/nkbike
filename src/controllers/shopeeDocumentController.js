@@ -141,8 +141,11 @@ async function storeRemoteFile(doc, fileLink, fileName) {
   doc.status = "ready"; doc.downloadedAt = new Date(); doc.error = "";
   try {
     const preview = await buildHtmlPreview(buffer, doc.fileName);
+    if (Buffer.byteLength(preview.html, "utf8") > 8 * 1024 * 1024) {
+      throw new Error("Bản xem HTML quá lớn để lưu an toàn trong MongoDB.");
+    }
     doc.htmlContent = preview.html;
-    doc.extractedText = preview.text;
+    doc.extractedText = String(preview.text || "").slice(0, 5 * 1024 * 1024);
     doc.htmlGeneratedAt = new Date();
     doc.conversionError = "";
   } catch (conversionError) {
