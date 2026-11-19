@@ -1,33 +1,84 @@
 const ShopeeOrder = require("../models/ShopeeOrder");
 const ShopeeReturn = require("../models/ShopeeReturn");
 
+// Tên tỉnh/thành hiện hành và tên địa giới cũ để xử lý cả đơn cũ.
+const VIETNAM_PROVINCES = [
+  "An Giang", "Bà Rịa - Vũng Tàu", "Bắc Giang", "Bắc Kạn", "Bạc Liêu",
+  "Bắc Ninh", "Bến Tre", "Bình Định", "Bình Dương", "Bình Phước",
+  "Bình Thuận", "Cà Mau", "Cần Thơ", "Cao Bằng", "Đà Nẵng", "Đắk Lắk",
+  "Đắk Nông", "Điện Biên", "Đồng Nai", "Đồng Tháp", "Gia Lai", "Hà Giang",
+  "Hà Nam", "Hà Nội", "Hà Tĩnh", "Hải Dương", "Hải Phòng", "Hậu Giang",
+  "Hòa Bình", "Hồ Chí Minh", "Hưng Yên", "Khánh Hòa", "Kiên Giang",
+  "Kon Tum", "Lai Châu", "Lâm Đồng", "Lạng Sơn", "Lào Cai", "Long An",
+  "Nam Định", "Nghệ An", "Ninh Bình", "Ninh Thuận", "Phú Thọ", "Phú Yên",
+  "Quảng Bình", "Quảng Nam", "Quảng Ngãi", "Quảng Ninh", "Quảng Trị",
+  "Sóc Trăng", "Sơn La", "Tây Ninh", "Thái Bình", "Thái Nguyên",
+  "Thanh Hóa", "Thừa Thiên Huế", "Tiền Giang", "Trà Vinh", "Tuyên Quang",
+  "Vĩnh Long", "Vĩnh Phúc", "Yên Bái",
+  // Tên tỉnh/thành sau sắp xếp địa giới năm 2025.
+  "Đắk Lắk", "Lâm Đồng", "Gia Lai", "Đồng Nai", "Tây Ninh", "Cần Thơ",
+  "Đồng Tháp", "Vĩnh Long", "An Giang", "Cà Mau", "Bắc Ninh", "Hưng Yên",
+  "Ninh Bình", "Phú Thọ", "Thái Nguyên", "Quảng Ngãi", "Khánh Hòa",
+  "Lào Cai", "Tuyên Quang", "Hải Phòng", "Đà Nẵng", "Quảng Trị",
+  "Hồ Chí Minh", "Huế"
+];
+
+const normalizeAddressText = (value) =>
+  String(value || "")
+    .normalize("NFD")
+    .replace(/[\\u0300-\\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
 const cleanProvince = (value) => {
   const text = String(value || "").trim();
-  if (!text || /\*{2,}|x{3,}/i.test(text) || /^(việt nam|viet nam|vietnam)$/i.test(text)) return "";
+  if (!text || /\\*{2,}|x{3,}/i.test(text) || /^(việt nam|viet nam|vietnam)$/i.test(text)) return "";
   return text;
+};
+
+const findKnownProvince = (values = []) => {
+  const combined = normalizeAddressText(values.filter(Boolean).join(" "));
+  if (!combined) return "";
+  const candidates = [...new Set(VIETNAM_PROVINCES)]
+    .sort((a, b) => normalizeAddressText(b).length - normalizeAddressText(a).length);
+  for (const province of candidates) {
+    const normalized = normalizeAddressText(province);
+    if (new RegExp(`(^| )${normalized.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}( |$)`).test(combined)) {
+      return province;
+    }
+  }
+  // Các cách viết tắt phổ biến của TP.HCM và TP.Hà Nội.
+  if (/(^| )(tp hcm|tphcm|hcm|sai gon)( |$)/.test(combined)) return "Hồ Chí Minh";
+  if (/(^| )(tp ha noi|tphn)( |$)/.test(combined)) return "Hà Nội";
+  return "";
 };
 
 const getProvince = (order = {}) => {
   const rawAddress = order.rawData?.recipient_address || order.rawData?.recipientAddress || {};
-  // Shopee trả về các thành phần địa chỉ riêng; state thường là tỉnh/thành tại Việt Nam.
-  const structured = [
+  const candidates = [
     order.recipientProvince,
     rawAddress.state,
     rawAddress.province,
     rawAddress.province_name,
     rawAddress.city,
+    rawAddress.full_address,
+    rawAddress.address,
+    order.recipientAddress,
   ];
-  for (const candidate of structured) {
+
+  // Tìm theo danh sách địa danh trên toàn bộ chuỗi, không mặc định tỉnh luôn nằm cuối.
+  const knownProvince = findKnownProvince(candidates);
+  if (knownProvince) return knownProvince;
+
+  // Nếu Shopee có trả riêng state nhưng không thuộc danh sách địa danh VN.
+  for (const candidate of [order.recipientProvince, rawAddress.state, rawAddress.province, rawAddress.province_name]) {
     const province = cleanProvince(candidate);
     if (province) return province;
   }
-
-  // Chỉ dùng full_address làm phương án dự phòng nếu phần cuối không bị Shopee che.
-  const parts = String(order.recipientAddress || rawAddress.full_address || "")
-    .split(",")
-    .map((part) => cleanProvince(part))
-    .filter(Boolean);
-  return parts.length ? parts[parts.length - 1] : "Chưa xác định";
+  return "Chưa xác định";
 };
 
 const isCancelled = (status = "") =>
