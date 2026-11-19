@@ -416,6 +416,7 @@ router.post(
 // SHOPEE FINANCE DOCUMENTS
 // =====================================================
 router.get("/documents", ...adminAuth, shopeeDocumentController.listDocuments);
+router.get("/documents/:id/view", ...adminAuth, shopeeDocumentController.viewDocument);
 router.post("/documents/sync", ...adminAuth, shopeeDocumentController.syncMonth);
 router.post("/documents/:id/poll", ...adminAuth, shopeeDocumentController.pollOne);
 router.get("/documents/:id/download", ...adminAuth, shopeeDocumentController.downloadDocument);
