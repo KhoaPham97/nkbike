@@ -1,4 +1,3 @@
-const Order = require("../models/orders");
 const ShopeeOrder = require("../models/ShopeeOrder");
 const ShopeeReturn = require("../models/ShopeeReturn");
 
@@ -24,17 +23,16 @@ const isReturned = (record) => {
 
 exports.getOrderOutcomeByProvince = async (req, res) => {
   try {
-    const { fromDate, toDate, source = "all" } = req.query;
+    const { fromDate, toDate } = req.query;
     const start = fromDate ? new Date(fromDate) : new Date(new Date().getFullYear(), 0, 1);
     const end = toDate ? new Date(new Date(toDate).setHours(23, 59, 59, 999)) : new Date();
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
       return res.status(400).json({ success: false, message: "Khoảng ngày không hợp lệ" });
     }
     const dateFilter = { $gte: start, $lte: end };
-    const [internalOrders, shopeeOrders] = await Promise.all([
-      source === "shopee" ? [] : Order.find({ created_at: dateFilter }).select("status customerAddress created_at code").lean(),
-      source === "internal" ? [] : ShopeeOrder.find({ createTime: dateFilter }).select("orderSn orderStatus recipientAddress createTime").lean(),
-    ]);
+    const shopeeOrders = await ShopeeOrder.find({ createTime: dateFilter })
+      .select("orderSn orderStatus recipientAddress createTime")
+      .lean();
     const shopeeSns = shopeeOrders.map((order) => order.orderSn).filter(Boolean);
     const returns = shopeeSns.length
       ? await ShopeeReturn.find({ orderSn: { $in: shopeeSns }, returnType: "CUSTOMER_RETURN" })
@@ -50,7 +48,6 @@ exports.getOrderOutcomeByProvince = async (req, res) => {
       if (outcome.returned) row.returnedOrders += 1;
       byProvince.set(province, row);
     };
-    internalOrders.forEach((order) => add(order.customerAddress, { cancelled: isCancelled(order.status), returned: false }));
     shopeeOrders.forEach((order) => add(order.recipientAddress, {
       cancelled: isCancelled(order.orderStatus),
       returned: returnedSns.has(String(order.orderSn)),
