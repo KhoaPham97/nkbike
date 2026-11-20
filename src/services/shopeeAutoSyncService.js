@@ -1045,10 +1045,12 @@ async function processShopeeOrderStock(order) {
   if (
     status === "READY_TO_SHIP" ||
     status === "PROCESSED" ||
-    status === "SHIPPED"
+    status === "SHIPPED" ||
+    status === "TO_CONFIRM_RECEIVE"
   ) {
-    // SHIPPED vẫn chỉ giữ hàng, không xuất kho.
-    // Trường hợp lần đầu đồng bộ đã ở SHIPPED vẫn giữ hàng.
+    // TO_CONFIRM_RECEIVE là đơn đã bàn giao/vận chuyển và chờ người mua xác nhận.
+    // Nếu lần đầu đồng bộ chỉ thấy trạng thái này, vẫn phải giữ hàng.
+    // Chỉ COMPLETED mới xuất kho thực tế.
     return reserveShopeeOrder(order);
   }
 
