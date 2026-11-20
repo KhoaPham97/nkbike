@@ -1177,6 +1177,18 @@ async function syncOneShop(shop, onOrderProgress = null) {
                     ? "unmapped"
                     : "checked",
           itemCount: Array.isArray(processed.items) ? processed.items.length : 0,
+          message:
+            processed.stockStatus === "unmapped"
+              ? "Có SKU chưa được ánh xạ đầy đủ; hệ thống chưa thể giữ đủ hàng."
+              : processed.stockStatus === "pending"
+                ? "Chưa giữ hàng: kiểm tra mapping và quyền cho phép trừ/giữ kho của SKU."
+                : processed.stockStatus === "ready"
+                  ? "Các SKU đủ điều kiện đã được giữ hàng."
+                  : processed.stockStatus === "partially_deducted"
+                    ? "Đơn đã xuất kho một phần; phần còn lại tiếp tục được theo dõi."
+                    : processed.stockStatus === "deducted"
+                      ? "Đơn đã được xuất kho."
+                      : "Đã kiểm tra trạng thái đơn và tồn kho.",
           processedAt: new Date(),
         };
         result.orderResults.push(orderResult);
