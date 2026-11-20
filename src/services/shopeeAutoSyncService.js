@@ -121,11 +121,12 @@ function getOrderStockStatus(items) {
       : "pending";
   }
 
+  const hasUnmappedItems = items.some((item) => item.mappingStatus !== "mapped");
   const allDeducted = eligibleItems.every(
     (item) => toNumber(item.deductedQty) >= getRequiredQty(item),
   );
 
-  if (allDeducted) return "deducted";
+  if (allDeducted && !hasUnmappedItems) return "deducted";
 
   const hasDeducted = eligibleItems.some(
     (item) => toNumber(item.deductedQty) > 0,
@@ -139,6 +140,7 @@ function getOrderStockStatus(items) {
       getRequiredQty(item),
   );
 
+  if (hasUnmappedItems) return "unmapped";
   return allCovered ? "ready" : "pending";
 }
 function normalizeInventoryBatchEnums(batch) {
@@ -341,25 +343,32 @@ async function upsertShopeeOrder(shopId, normalized) {
     );
 
     if (oldItem) {
-      // Giữ nguyên mapping snapshot của đơn đã tồn tại.
+      const reservedQty = toNumber(oldItem.reservedQty);
+      const deductedQty = toNumber(oldItem.deductedQty);
+      const canRefreshMapping = reservedQty <= 0 && deductedQty <= 0;
+      const mapping = canRefreshMapping
+        ? await findShopeeMapping(shopId, newItem)
+        : null;
+
+      const mappingSnapshot = canRefreshMapping
+        ? applyMappingSnapshot(newItem, mapping)
+        : {
+            ...newItem,
+            productId: oldItem.productId,
+            variantCode: oldItem.variantCode,
+            variantName: oldItem.variantName,
+            mappingStatus: oldItem.mappingStatus,
+            quantityMultiplier: Math.max(
+              0.000001,
+              toNumber(oldItem.quantityMultiplier, 1),
+            ),
+            allowStockDeduction: oldItem.allowStockDeduction === true,
+          };
+
       nextItems.push({
-        ...newItem,
-
-        productId: oldItem.productId,
-        variantCode: oldItem.variantCode,
-        variantName: oldItem.variantName,
-
-        mappingStatus: oldItem.mappingStatus,
-
-        quantityMultiplier: Math.max(
-          0.000001,
-          toNumber(oldItem.quantityMultiplier, 1),
-        ),
-
-        allowStockDeduction: oldItem.allowStockDeduction === true,
-
-        reservedQty: toNumber(oldItem.reservedQty),
-        deductedQty: toNumber(oldItem.deductedQty),
+        ...mappingSnapshot,
+        reservedQty,
+        deductedQty,
         returnedQty: toNumber(oldItem.returnedQty),
       });
 
@@ -527,11 +536,8 @@ async function reserveShopeeOrder(order) {
       throw new Error("Không tìm thấy đơn Shopee");
     }
 
-    if (existed) {
-      await commitTransaction(session);
-      return freshOrder;
-    }
-
+    // Đã có giao dịch giữ trước đó không có nghĩa là các SKU mới ghép
+    // hoặc mới bật quyền giữ kho đã được xử lý.
     const allocations = [];
     let totalQty = 0;
 
@@ -588,20 +594,33 @@ async function reserveShopeeOrder(order) {
       totalQty += needReserve;
     }
 
-    await createStockTransaction({
-      session,
-      idempotencyKey,
-      shopId,
-      orderSn,
-      kind: "order_reserve",
-      allocations,
-      totalQty,
-      note: `Giữ hàng đơn Shopee ${orderSn}`,
-    });
+    if (totalQty > 0) {
+      if (existed) {
+        existed.allocations.push(...allocations);
+        existed.totalQty = toNumber(existed.totalQty) + totalQty;
+        existed.note = `Giữ hàng đơn Shopee ${orderSn} (giữ bổ sung)`;
+        await existed.save({ session });
+      } else {
+        await createStockTransaction({
+          session,
+          idempotencyKey,
+          shopId,
+          orderSn,
+          kind: "order_reserve",
+          allocations,
+          totalQty,
+          note: `Giữ hàng đơn Shopee ${orderSn}`,
+        });
+      }
+    }
 
     freshOrder.stockStatus = getOrderStockStatus(freshOrder.items);
 
-    if (totalQty > 0 && !freshOrder.stockReservedAt) {
+    const totalReservedQty = freshOrder.items.reduce(
+      (sum, item) => sum + toNumber(item.reservedQty),
+      0,
+    );
+    if (totalReservedQty > 0 && !freshOrder.stockReservedAt) {
       freshOrder.stockReservedAt = new Date();
     }
 
@@ -938,11 +957,14 @@ async function releaseShopeeOrder(order) {
     let totalQty = 0;
 
     for (const item of freshOrder.items) {
-      if (!isStockEligible(item)) continue;
-
       const itemReserved = toNumber(item.reservedQty);
-
       if (itemReserved <= 0) continue;
+
+      if (!item.productId || !toText(item.variantCode)) {
+        throw new Error(
+          `Không thể giải phóng giữ hàng đơn ${orderSn}: thiếu mapping của ${item.itemName || item.itemId}`,
+        );
+      }
 
       const { product, variant } = await loadProductVariant(
         item.productId,
