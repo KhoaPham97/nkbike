@@ -141,17 +141,17 @@ async function runShopeeOrderSync(options = {}) {
 
   isRunning = true;
   const startedAt = new Date();
-  const runLog = await ShopeeOrderSyncRun.create({
-    status: "running",
-    trigger: options.trigger === "manual" ? "manual" : "cron",
-    startedAt,
-    message: "Đang lấy đơn hàng và xử lý tồn kho Shopee.",
-  });
-
+  let runLog = null;
   let heartbeat = null;
   let lockLost = false;
 
   try {
+    runLog = await ShopeeOrderSyncRun.create({
+      status: "running",
+      trigger: options.trigger === "manual" ? "manual" : "cron",
+      startedAt,
+      message: "Đang lấy đơn hàng và xử lý tồn kho Shopee.",
+    });
     heartbeat = setInterval(async () => {
       try {
         const renewed = await renewLock(ownerToken);
@@ -170,8 +170,9 @@ async function runShopeeOrderSync(options = {}) {
         await ShopeeOrderSyncRun.updateOne(
           { _id: runLog._id, status: "running" },
           {
-            $push: { orders: orderResult },
+            $push: { orders: { $each: [orderResult], $slice: -300 } },
             $inc: {
+              processedOrders: 1,
               errorCount: orderResult.action === "error" ? 1 : 0,
               reserved: orderResult.action === "reserved" ? 1 : 0,
               deducted: orderResult.action === "deducted" ? 1 : 0,
@@ -294,7 +295,7 @@ async function runShopeeOrderSync(options = {}) {
     console.error("[Shopee Order Sync] Lỗi:", error);
     const finishedAt = new Date();
     await ShopeeOrderSyncRun.updateOne(
-      { _id: runLog._id },
+      { _id: runLog?._id },
       {
         $set: {
           status: "failed",
@@ -307,7 +308,7 @@ async function runShopeeOrderSync(options = {}) {
 
     return {
       success: false,
-      runId: String(runLog._id),
+      runId: runLog ? String(runLog._id) : null,
       error: error.message || String(error),
     };
   } finally {
