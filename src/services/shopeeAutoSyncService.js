@@ -1063,7 +1063,7 @@ async function processShopeeOrderStock(order) {
 // SYNC ONE SHOP
 // =====================================================
 
-async function syncOneShop(shop) {
+async function syncOneShop(shop, onOrderProgress = null) {
   const shopId = String(shop.shopId);
 
   const now = Math.floor(Date.now() / 1000);
@@ -1081,6 +1081,7 @@ async function syncOneShop(shop) {
     released: 0,
     errors: [],
     newOrders: [],
+    orderResults: [],
   };
 
   do {
@@ -1157,11 +1158,45 @@ async function syncOneShop(shop) {
         if (normalized.orderStatus === "CANCELLED" && previousReservedQty > 0) {
           result.released += 1;
         }
+
+        const orderResult = {
+          shopId,
+          orderSn: order.orderSn,
+          orderStatus: normalized.orderStatus,
+          stockStatus: processed.stockStatus,
+          reservedQty: currentReservedQty,
+          reservedAdded: Math.max(0, currentReservedQty - previousReservedQty),
+          action:
+            currentReservedQty > previousReservedQty
+              ? "reserved"
+              : processed.stockStatus === "deducted"
+                ? "deducted"
+                : normalized.orderStatus === "CANCELLED" && previousReservedQty > 0
+                  ? "released"
+                  : processed.stockStatus === "unmapped"
+                    ? "unmapped"
+                    : "checked",
+          itemCount: Array.isArray(processed.items) ? processed.items.length : 0,
+          processedAt: new Date(),
+        };
+        result.orderResults.push(orderResult);
+        if (typeof onOrderProgress === "function") {
+          await onOrderProgress(orderResult);
+        }
       } catch (error) {
-        result.errors.push({
+        const orderError = {
+          shopId,
           orderSn: rawOrder.order_sn || rawOrder.orderSn || "",
+          orderStatus: normalizeShopeeStatus(rawOrder.order_status || rawOrder.orderStatus),
+          action: "error",
           message: error.message || String(error),
-        });
+          processedAt: new Date(),
+        };
+        result.errors.push(orderError);
+        result.orderResults.push(orderError);
+        if (typeof onOrderProgress === "function") {
+          await onOrderProgress(orderError);
+        }
 
         console.error(
           `[Shopee Auto Sync] Lỗi đơn ${rawOrder.order_sn || ""}:`,
@@ -1182,7 +1217,7 @@ async function syncOneShop(shop) {
 // SYNC ALL CONNECTED SHOPS
 // =====================================================
 
-async function syncAllShopeeOrders() {
+async function syncAllShopeeOrders(options = {}) {
   const shops = await ShopeeShop.find({
     status: "connected",
   }).lean();
@@ -1191,8 +1226,9 @@ async function syncAllShopeeOrders() {
 
   for (const shop of shops) {
     try {
-      const result = await syncOneShop(shop);
+      const result = await syncOneShop(shop, options.onOrderProgress);
       results.push(result);
+      if (typeof options.onShopProgress === "function") await options.onShopProgress(result);
     } catch (error) {
       results.push({
         shopId: shop.shopId,
