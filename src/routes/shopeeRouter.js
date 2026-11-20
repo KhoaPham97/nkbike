@@ -122,6 +122,7 @@ router.get("/sync-runs/history", ...adminAuth, async (req, res) => {
   try {
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
     const runs = await ShopeeOrderSyncRun.find({})
+      .select("-orders")
       .sort({ startedAt: -1 })
       .limit(limit)
       .lean();
