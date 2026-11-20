@@ -18,6 +18,8 @@ const shopeeChatReviewTaskController = require("../controllers/shopeeChatReviewT
 const adminAuth = [auth, adminOnly];
 const ShopeeOrderNotification = require("../models/ShopeeOrderNotification");
 const shopeeDocumentController = require("../controllers/shopeeDocumentController");
+const ShopeeOrderSyncRun = require("../models/ShopeeOrderSyncRun");
+const { runShopeeOrderSync } = require("../jobs/shopeeOrderSyncJob");
 
 // =====================================================
 // AUTHENTICATION & SHOP MANAGEMENT
@@ -92,6 +94,64 @@ router.get(
   ...adminAuth,
   shopeeOrderController.getSyncStatusAsync,
 );
+
+// =====================================================
+// SHOPEE ORDER SYNC MONITOR
+// =====================================================
+
+router.get("/sync-runs/status", ...adminAuth, async (req, res) => {
+  try {
+    const [running, latest] = await Promise.all([
+      ShopeeOrderSyncRun.findOne({ status: "running" }).sort({ startedAt: -1 }).lean(),
+      ShopeeOrderSyncRun.findOne({ status: { $ne: "running" } }).sort({ startedAt: -1 }).lean(),
+    ]);
+    return res.json({
+      success: true,
+      intervalMinutes: 5,
+      timezone: "Asia/Ho_Chi_Minh",
+      running,
+      latest,
+    });
+  } catch (error) {
+    console.error("[Shopee Sync Monitor] Status failed:", error);
+    return res.status(500).json({ success: false, message: "Không tải được trạng thái đồng bộ." });
+  }
+});
+
+router.get("/sync-runs/history", ...adminAuth, async (req, res) => {
+  try {
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
+    const runs = await ShopeeOrderSyncRun.find({})
+      .sort({ startedAt: -1 })
+      .limit(limit)
+      .lean();
+    return res.json({ success: true, runs });
+  } catch (error) {
+    console.error("[Shopee Sync Monitor] History failed:", error);
+    return res.status(500).json({ success: false, message: "Không tải được lịch sử đồng bộ." });
+  }
+});
+
+router.get("/sync-runs/:id", ...adminAuth, async (req, res) => {
+  try {
+    const run = await ShopeeOrderSyncRun.findById(req.params.id).lean();
+    if (!run) return res.status(404).json({ success: false, message: "Không tìm thấy lần đồng bộ." });
+    return res.json({ success: true, run });
+  } catch (error) {
+    console.error("[Shopee Sync Monitor] Detail failed:", error);
+    return res.status(500).json({ success: false, message: "Không tải được chi tiết đồng bộ." });
+  }
+});
+
+router.post("/sync-runs/run", ...adminAuth, async (req, res) => {
+  try {
+    const result = await runShopeeOrderSync({ trigger: "manual" });
+    return res.status(result.success ? 200 : result.skipped ? 409 : 500).json(result);
+  } catch (error) {
+    console.error("[Shopee Sync Monitor] Manual run failed:", error);
+    return res.status(500).json({ success: false, message: error.message || "Không thể chạy đồng bộ." });
+  }
+});
 
 // =====================================================
 // SKU MAPPING
