@@ -57,12 +57,6 @@ router.patch("/chat/review-tasks/:taskId", ...adminAuth, shopeeChatReviewTaskCon
 // ORDER SYNC
 // =====================================================
 
-router.post(
-  "/orders/sync",
-  ...adminAuth,
-  shopeeOrderController.syncOrdersAsync,
-);
-
 router.get("/orders", ...adminAuth, shopeeOrderController.getOrdersAsync);
 
 // Lấy dữ liệu logistics chính thức từ Shopee để tự thiết kế vận đơn PDF.
