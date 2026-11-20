@@ -30,6 +30,7 @@ const schema = new mongoose.Schema(
     deducted: { type: Number, default: 0 },
     released: { type: Number, default: 0 },
     errorCount: { type: Number, default: 0 },
+    processedOrders: { type: Number, default: 0 },
     message: { type: String, default: "" },
     orders: { type: [shopeeOrderSyncOrderSchema], default: [] },
     shopResults: { type: [mongoose.Schema.Types.Mixed], default: [] },
