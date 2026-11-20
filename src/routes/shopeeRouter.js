@@ -102,8 +102,8 @@ router.get(
 router.get("/sync-runs/status", ...adminAuth, async (req, res) => {
   try {
     const [running, latest] = await Promise.all([
-      ShopeeOrderSyncRun.findOne({ status: "running" }).sort({ startedAt: -1 }).lean(),
-      ShopeeOrderSyncRun.findOne({ status: { $ne: "running" } }).sort({ startedAt: -1 }).lean(),
+      ShopeeOrderSyncRun.findOne({ status: "running" }).select("-shopResults").sort({ startedAt: -1 }).lean(),
+      ShopeeOrderSyncRun.findOne({ status: { $ne: "running" } }).select("-orders -shopResults").sort({ startedAt: -1 }).lean(),
     ]);
     return res.json({
       success: true,
