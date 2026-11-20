@@ -20,6 +20,7 @@ const ShopeeOrderNotification = require("../models/ShopeeOrderNotification");
 const shopeeDocumentController = require("../controllers/shopeeDocumentController");
 const ShopeeOrderSyncRun = require("../models/ShopeeOrderSyncRun");
 const { runShopeeOrderSync } = require("../jobs/shopeeOrderSyncJob");
+const { isBackgroundJobsEnabled } = require("../utils/backgroundJobs");
 
 // =====================================================
 // AUTHENTICATION & SHOP MANAGEMENT
@@ -109,6 +110,7 @@ router.get("/sync-runs/status", ...adminAuth, async (req, res) => {
       success: true,
       intervalMinutes: 5,
       timezone: "Asia/Ho_Chi_Minh",
+      backgroundJobsEnabled: isBackgroundJobsEnabled(),
       running,
       latest,
     });
