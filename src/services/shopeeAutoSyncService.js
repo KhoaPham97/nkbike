@@ -1181,7 +1181,10 @@ async function syncOneShop(shop, onOrderProgress = null) {
         };
         result.orderResults.push(orderResult);
         if (typeof onOrderProgress === "function") {
-          await onOrderProgress(orderResult);
+          try { await onOrderProgress(orderResult); }
+          catch (progressError) {
+            console.error("[Shopee Auto Sync] Không ghi được tiến trình đơn:", progressError);
+          }
         }
       } catch (error) {
         const orderError = {
@@ -1195,7 +1198,10 @@ async function syncOneShop(shop, onOrderProgress = null) {
         result.errors.push(orderError);
         result.orderResults.push(orderError);
         if (typeof onOrderProgress === "function") {
-          await onOrderProgress(orderError);
+          try { await onOrderProgress(orderError); }
+          catch (progressError) {
+            console.error("[Shopee Auto Sync] Không ghi được lỗi tiến trình đơn:", progressError);
+          }
         }
 
         console.error(
