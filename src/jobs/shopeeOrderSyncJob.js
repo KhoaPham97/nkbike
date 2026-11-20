@@ -6,6 +6,7 @@ const ShopeeAutoStockJobLock = require("../models/ShopeeAutoStockJobLock");
 const { syncAllShopeeOrders } = require("../services/shopeeAutoSyncService");
 const ShopeeOrderNotification = require("../models/ShopeeOrderNotification");
 const ShopeeOrder = require("../models/ShopeeOrder");
+const ShopeeOrderSyncRun = require("../models/ShopeeOrderSyncRun");
 
 const LOCK_ID = "SHOPEE_ORDER_SYNC";
 const LOCK_DURATION_MS = 30 * 60 * 1000;
@@ -114,7 +115,7 @@ function emitSyncEvent(result) {
   });
 }
 
-async function runShopeeOrderSync() {
+async function runShopeeOrderSync(options = {}) {
   if (isRunning) {
     return {
       success: false,
@@ -127,14 +128,25 @@ async function runShopeeOrderSync() {
   const locked = await acquireLock(ownerToken);
 
   if (!locked) {
-    return {
-      success: false,
-      skipped: true,
-      message: "Shopee Order Sync đang chạy ở tiến trình khác.",
-    };
+    const message = "Shopee Order Sync đang chạy ở tiến trình khác.";
+    await ShopeeOrderSyncRun.create({
+      status: "skipped",
+      trigger: options.trigger === "manual" ? "manual" : "cron",
+      startedAt: new Date(),
+      finishedAt: new Date(),
+      message,
+    }).catch(() => {});
+    return { success: false, skipped: true, message };
   }
 
   isRunning = true;
+  const startedAt = new Date();
+  const runLog = await ShopeeOrderSyncRun.create({
+    status: "running",
+    trigger: options.trigger === "manual" ? "manual" : "cron",
+    startedAt,
+    message: "Đang lấy đơn hàng và xử lý tồn kho Shopee.",
+  });
 
   let heartbeat = null;
   let lockLost = false;
@@ -153,7 +165,22 @@ async function runShopeeOrderSync() {
       }
     }, RENEW_INTERVAL_MS);
 
-    const results = await syncAllShopeeOrders();
+    const results = await syncAllShopeeOrders({
+      onOrderProgress: async (orderResult) => {
+        await ShopeeOrderSyncRun.updateOne(
+          { _id: runLog._id, status: "running" },
+          {
+            $push: { orders: orderResult },
+            $inc: {
+              errorCount: orderResult.action === "error" ? 1 : 0,
+              reserved: orderResult.action === "reserved" ? 1 : 0,
+              deducted: orderResult.action === "deducted" ? 1 : 0,
+              released: orderResult.action === "released" ? 1 : 0,
+            },
+          },
+        );
+      },
+    });
 
     // Persist every newly discovered Shopee order before emitting realtime.
     // The compound unique index makes this safe across retries.
@@ -213,6 +240,39 @@ async function runShopeeOrderSync() {
       emitSyncEvent(result);
     }
 
+    const totals = results.reduce(
+      (sum, item) => ({
+        fetched: sum.fetched + Number(item.fetched || 0),
+        saved: sum.saved + Number(item.saved || 0),
+        reserved: sum.reserved + Number(item.reserved || 0),
+        deducted: sum.deducted + Number(item.deducted || 0),
+        released: sum.released + Number(item.released || 0),
+        errors: sum.errors + (Array.isArray(item.errors) ? item.errors.length : 0) + (item.error ? 1 : 0),
+      }),
+      { fetched: 0, saved: 0, reserved: 0, deducted: 0, released: 0, errors: 0 },
+    );
+    const finishedAt = new Date();
+    await ShopeeOrderSyncRun.updateOne(
+      { _id: runLog._id },
+      {
+        $set: {
+          status: totals.errors ? (totals.saved ? "partial" : "failed") : "success",
+          finishedAt,
+          durationMs: finishedAt.getTime() - startedAt.getTime(),
+          shopCount: results.length,
+          ...totals,
+          errorCount: totals.errors,
+          message: totals.errors
+            ? "Đồng bộ hoàn tất nhưng có đơn hoặc gian hàng phát sinh lỗi."
+            : "Đồng bộ đơn hàng Shopee hoàn tất.",
+          shopResults: results.map(({ orderResults, newOrders, errors, ...summary }) => ({
+            ...summary,
+            errors: Array.isArray(errors) ? errors : [],
+          })),
+        },
+      },
+    );
+
     console.log(
       "[Shopee Order Sync] Hoàn tất:",
       JSON.stringify(
@@ -227,13 +287,27 @@ async function runShopeeOrderSync() {
 
     return {
       success: true,
+      runId: String(runLog._id),
       results,
     };
   } catch (error) {
     console.error("[Shopee Order Sync] Lỗi:", error);
+    const finishedAt = new Date();
+    await ShopeeOrderSyncRun.updateOne(
+      { _id: runLog._id },
+      {
+        $set: {
+          status: "failed",
+          finishedAt,
+          durationMs: finishedAt.getTime() - startedAt.getTime(),
+          message: error.message || String(error),
+        },
+      },
+    ).catch(() => {});
 
     return {
       success: false,
+      runId: String(runLog._id),
       error: error.message || String(error),
     };
   } finally {
