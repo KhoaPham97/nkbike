@@ -1,0 +1,24 @@
+name = "nkbike"
+main = "worker.js"
+compatibility_date = "2026-11-21"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# One stable Durable Object identity routes all traffic to one Node process.
+# Do not increase max_instances without redesigning the job singleton.
+[[containers]]
+class_name = "NKBikeBackend"
+image = "./Dockerfile"
+max_instances = 1
+instance_type = "standard-1"
+
+[[durable_objects.bindings]]
+name = "NKBIKE_BACKEND"
+class_name = "NKBikeBackend"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["NKBikeBackend"]
+
+[observability]
+enabled = true
