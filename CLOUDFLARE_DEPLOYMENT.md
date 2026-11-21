@@ -23,15 +23,30 @@ Workers Builds connected to Git can build and publish the Docker image.
 
 Set the backend's existing environment variables as Worker secrets/vars in
 Cloudflare (Workers & Pages > nkbike > Settings > Variables and Secrets).
-At minimum the application needs:
+The current source references these variables (use Secret for credentials and
+ordinary Variables for non-sensitive settings):
 
 - MONGODB_URI
 - JWT_SECRET
+- SHOPEE_PARTNER_ID
+- SHOPEE_PARTNER_KEY
+- SHOPEE_API_BASE_URL
+- SHOPEE_ENV
+- SHOPEE_FRONTEND_URL
+- SHOPEE_REDIRECT_URI
+- CLOUDINARY_API_KEY
+- CLOUDINARY_API_SECRET
+- CLOUDINARY_CLOUD_NAME
+- CLOUDINARY_NAME
+- CLOUDINARY_URL
+- STRIPE_SECRET_KEY
+- STRIPE_SHIPPING_RATE_ID
+- WEB_APP_URL
+- CNY_VND_RATE
 
-Also copy every credential used by the current application, including Shopee
-Open Platform credentials, Cloudinary credentials, Stripe/PayPal keys and any
-other integration secrets. The Worker passes string-valued variables to the
-container at startup. Never commit secret values to Git.
+The Worker forwards all string-valued bindings to the container at startup.
+Re-check the source when adding new integrations and add their variables too.
+Never commit secret values to Git.
 
 ## Build and deploy
 
