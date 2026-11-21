@@ -1,99 +1,77 @@
-# Cloudflare Backend Migration Plan
+# Cloudflare Backend Migration — Nhật Khang Bike
 
-## Goal
+## Chosen architecture
 
-Move the Nhật Khang Bike API from the suspended Render service to a Cloudflare-hosted backend without changing the existing MongoDB Atlas database or business rules.
+Use Cloudflare Workers + Cloudflare Containers to host the existing Node.js API,
+rather than rewriting hundreds of Express/Mongoose business routes into a
+different runtime.
 
-This branch is planning-only. It does not replace the production Worker, change frontend API URLs, connect to the database, or enable scheduled jobs.
+- Public entrypoint: worker.js
+- Container runtime: Dockerfile, Node 22, existing index.js
+- Routing: one stable Durable Object identity and max_instances = 1
+- Database: existing MongoDB Atlas database, unchanged
+- Realtime: existing Socket.IO server inside the Node container; Worker uses
+  Container.fetch so WebSocket upgrades are forwarded.
+- Scheduled jobs: existing six jobs run in the single Node process. A Cloudflare
+  Cron Trigger pings the container every five minutes to keep the one scheduler
+  alive during periods without storefront traffic.
+- No Render URL, self-proxy, database migration or new database is involved.
 
-## Current backend inventory
+## Implemented in this branch
 
-- Express application entry: `app.js`
-- Node HTTP / Socket.IO / background-job startup: `index.js`
-- MongoDB access: Mongoose in `src/db/mongoose.js`
-- Authentication: JWT plus a MongoDB user/token lookup in `src/middlewares/auth.js`
-- API domains registered in `app.js`: authentication, products, users, carts, checkout, orders, customers, inventory, analytics, settings, admin, vehicles, inventory batches, costs, Shopee, SKU, reviews, media and order outcome analytics.
-- Realtime namespaces are initialized in `index.js` and `src/socket/*`.
-- Scheduled Shopee jobs currently started by `index.js`: auto stock, order sync, auto review, review sync, stock sync and document sync.
-- Job scheduling is intentionally gated by `ENABLE_BACKGROUND_JOBS` in `src/utils/backgroundJobs.js`.
+- worker.js: Cloudflare Container gateway, forwarding HTTP and WebSocket
+  requests unchanged; one fixed backend identity; safe 503 on startup failure.
+- Dockerfile: Node 22 production image running node index.js.
+- .dockerignore: excludes .env, local dependencies, Git and temporary files.
+- wrangler.toml: Worker, Durable Object Container binding, one instance,
+  standard-1 instance sizing, and five-minute scheduled keepalive.
+- package.json / package-lock.json: @cloudflare/containers runtime dependency.
+- CLOUDFLARE_DEPLOYMENT.md: setup and cutover checklist.
 
-## Migration constraints
+## Important prerequisites
 
-1. Keep the existing MongoDB Atlas database and collection names. Do not run migrations, drops, renames, or data rewrites as part of the runtime cutover.
-2. Do not configure the Worker to proxy to itself or to the suspended Render origin.
-3. Do not enable scheduled jobs until the Cloudflare scheduler has a durable single-runner lock and idempotency checks. There must be one active scheduler only.
-4. Keep the current Render/legacy code untouched during development. Cut over frontends only after parity tests pass.
-5. Keep credentials in Cloudflare secrets/bindings, never in source control.
-6. Preserve authentication semantics: Bearer JWT verification and database-backed session/token validation, including admin role checks.
-7. Preserve existing route paths and HTTP methods, including `POST /api/analytics/track`.
+Cloudflare Containers require a Workers Paid plan. Container image deployment
+from a Dockerfile requires a Docker-compatible image build environment. A Git
+connected Workers Builds deployment can build and publish the image.
 
-## Runtime assessment
+Set every environment variable currently used by the Node backend as a
+Cloudflare Worker secret or variable. At minimum this includes MONGODB_URI and
+JWT_SECRET, plus all existing Shopee, Cloudinary, payment and integration
+credentials. Do not commit secret values.
 
-The current application is not a drop-in Worker entrypoint:
+## Scheduler safety
 
-- Express uses Node's HTTP server and Socket.IO server startup.
-- Mongoose is initialized as a process-level side effect and exits the process on connection failure.
-- Several routes import Node-oriented libraries and perform file/PDF/XLSX operations.
-- Six recurring jobs are started from the Node server startup path.
+The Cloudflare Container is deliberately configured with max_instances = 1 and
+a stable Durable Object name. ENABLE_BACKGROUND_JOBS is set to true only inside
+that container. The old Render scheduler must be stopped/disabled before this
+new scheduler is enabled in production. Do not run both at once. Existing
+MongoDB job locks and idempotency protections must remain enabled because
+Cloudflare may restart a container during infrastructure maintenance.
 
-A Cloudflare runtime adapter and dependency-by-dependency compatibility work are required. Cloudflare's current MongoDB integration guide documents the native MongoDB driver and Mongoose 9+ inside Workers, with a Durable Object recommended to persist the MongoClient/Mongoose connection. This repository currently pins Mongoose 8.16.4, so the ORM version and all plugins/models must be validated and upgraded deliberately before use. Do not assume the current Mongoose version works unchanged. Cloudflare documents that Hyperdrive does not support MongoDB; use the documented TCP socket / Node compatibility path and Durable Object connection pattern.
+## Deployment and validation status
 
-## Proposed phases
+The source configuration has been committed to this feature branch only. It
+has NOT been deployed to the user's Cloudflare account, and no live credentials
+or production database connection have been tested from this environment.
 
-### Phase 0 — isolated Worker foundation
-- Create a separate Worker deployment target and health endpoint.
-- Add strict CORS handling for the known Admin, Zalo and storefront origins.
-- Add structured request IDs and safe error responses.
-- No production route traffic and no scheduled jobs yet.
+Before changing frontend API URLs:
+1. Configure all Worker secrets/vars in Cloudflare.
+2. Connect this repository to Workers Builds, with repository root as build
+   directory and npx wrangler deploy as the production deploy command.
+3. Confirm the Worker and Container image both deploy successfully.
+4. Confirm GET / returns the existing backend greeting.
+5. Test login, token validation, admin authorization and all API domains.
+6. Test Socket.IO WebSocket upgrades and notification events.
+7. Test Shopee order sync, notifications, reservation, deduction, release,
+   returns, stock sync and review/document jobs.
+8. Verify only one Container instance is active and no Render scheduler runs.
+9. Only after successful checks, switch Admin, storefront and Zalo API URLs.
 
-### Phase 1 — database and auth proof
-- Connect to the existing Atlas cluster using Cloudflare-supported connectivity and secrets.
-- Verify read-only access to the existing database and expected collections.
-- Port JWT verification and database-backed token lookup.
-- Validate login/session/admin authorization without changing records.
+## Data and rollback safeguards
 
-### Phase 2 — API domains
-Port and test each domain while retaining exact route contracts:
-1. analytics and settings;
-2. products, categories, users and customers;
-3. orders and checkout;
-4. inventory, reservations, batches and history;
-5. Shopee account, orders, returns, reviews, chat, mappings and reports;
-6. media, PDF/document and spreadsheet endpoints.
-
-### Phase 3 — realtime
-- Replace Socket.IO server behavior with a Cloudflare-compatible WebSocket design (likely Durable Objects).
-- Preserve authentication and event semantics for admin notifications, stock, orders and Shopee.
-
-### Phase 4 — one scheduler
-- Port the six jobs to scheduled execution only after route parity.
-- Use a durable database-backed lease/lock, bounded execution and idempotency.
-- Ensure exactly one scheduler is enabled; leave any old scheduler disabled before enabling the new one.
-- Verify order reservation/deduction/release invariants before production activation.
-
-### Phase 5 — cutover
-- Run smoke tests for every critical API, authentication, stock lifecycle, Shopee sync, reports and realtime.
-- Update frontend API base URLs only after tests pass.
-- Keep rollback instructions and do not delete the old deployment configuration until the new backend is proven stable.
-
-## Required Cloudflare configuration (names only)
-
-Store actual values as Cloudflare secrets/vars after the runtime design is validated:
-- `MONGODB_URI` (secret)
-- `JWT_SECRET` (secret)
-- existing Shopee app credentials and encryption keys (secrets)
-- existing Cloudinary credentials (secrets)
-- other payment/provider secrets used by the application (secrets)
-
-Do not paste secrets into GitHub issues, source files, or chat.
-
-## Acceptance criteria
-
-- Worker health endpoint responds independently of Render.
-- Existing Atlas database name and data remain unchanged.
-- Auth, admin permissions and all production route contracts pass tests.
-- No self-proxy or Render dependency remains in the new runtime.
-- No duplicate background processor can run.
-- Shopee order status transitions preserve reserve / deduct / release behavior.
-- Realtime notifications work for the existing frontend clients.
-- Frontends are cut over only after the above checks pass.
+- No MongoDB collections or records are changed by this migration branch.
+- Do not use local container disk for persistent files. Keep data in MongoDB,
+  Cloudinary or R2.
+- Keep existing frontend API URLs unchanged until parity tests pass.
+- Do not delete the Render deployment configuration until Cloudflare is proven
+  stable and a rollback path has been confirmed.
