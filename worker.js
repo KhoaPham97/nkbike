@@ -71,4 +71,20 @@ export default {
       );
     }
   },
+
+  // Keep the one primary container awake so its existing in-process scheduler
+  // continues running even when the shop website has no visitor traffic.
+  async scheduled(controller, env, ctx) {
+    const container = env.NKBIKE_BACKEND.getByName(BACKEND_INSTANCE_NAME);
+    ctx.waitUntil(
+      container.fetch(new Request("http://nkbike.internal/")).then(async (response) => {
+        await response.body?.cancel();
+        if (!response.ok) {
+          throw new Error(`Backend keep-alive returned HTTP ${response.status}`);
+        }
+      }).catch((error) => {
+        console.error("[NKBike Cloudflare] Scheduled keep-alive failed:", error);
+      }),
+    );
+  },
 };
