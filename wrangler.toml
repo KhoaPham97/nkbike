@@ -4,6 +4,9 @@ compatibility_date = "2026-11-21"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
+[triggers]
+crons = ["*/5 * * * *"]
+
 # One stable Durable Object identity routes all traffic to one Node process.
 # Do not increase max_instances without redesigning the job singleton.
 [[containers]]
