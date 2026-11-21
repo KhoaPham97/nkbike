@@ -13,9 +13,11 @@
 
 ## Required Cloudflare account capability
 
-Cloudflare Containers are available on Workers Paid plans. A first deployment
-from a Dockerfile requires a Docker-compatible build environment. Workers
-Builds connected to Git can build and publish the Docker image.
+Cloudflare Containers are available on Workers Paid plans. Container compute is
+billed separately from ordinary Worker requests; the five-minute keepalive is
+intended to keep the scheduler running and therefore keeps the backend warm.
+Review the account's current Containers pricing before enabling production.
+Workers Builds connected to Git can build and publish the Docker image.
 
 ## Secrets and variables
 
@@ -38,8 +40,9 @@ root as the build directory. Set the production build/deploy command to:
 
 npx wrangler deploy
 
-The Dockerfile uses Node 22 and npm ci. Ensure the build environment has a
-Docker-compatible image builder enabled for Cloudflare Containers.
+The Dockerfile uses Node 22 and npm ci. The GitHub Actions workflow validates
+locked dependencies, the Wrangler bundle/configuration and a Linux AMD64 Docker
+build. Workers Builds must have Cloudflare Containers image builds enabled.
 
 ## Validation before frontend cutover
 
@@ -51,8 +54,9 @@ Docker-compatible image builder enabled for Cloudflare Containers.
 5. Verify Shopee OAuth, order sync, order notification, stock reservation,
    return handling and manual sync.
 6. Verify only one container is running and background jobs are enabled only
-   in this container. Keep the old Render deployment stopped/disabled before
-   enabling this scheduler to avoid duplicate jobs.
+   in this container. The Worker keepalive runs every five minutes. Keep the old
+   Render deployment stopped/disabled before enabling this scheduler to avoid
+   duplicate jobs.
 7. Only after all checks pass, update admin/storefront/Zalo API base URLs.
 
 ## Important operational notes
