@@ -63,7 +63,7 @@ server.listen(PORT, async () => {
   );
 
   if (!isBackgroundJobsEnabled()) {
-    console.log("[BACKGROUND JOBS] Disabled on this deployment. Scheduled jobs run only on the primary Render backend.");
+    console.log("[BACKGROUND JOBS] Disabled on this deployment. Scheduled jobs run only on the designated primary backend.");
     return;
   }
 
