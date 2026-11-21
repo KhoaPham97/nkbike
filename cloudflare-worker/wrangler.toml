@@ -1,0 +1,16 @@
+name = "nkbike-free-staging"
+main = "src/index.js"
+compatibility_date = "2026-11-21"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[[durable_objects.bindings]]
+name = "MONGODB_CONNECTION"
+class_name = "MongoDBConnection"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["MongoDBConnection"]
+
+[observability]
+enabled = true
