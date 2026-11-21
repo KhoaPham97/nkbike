@@ -1,9 +1,9 @@
 name: Repair npm lockfile
 
 on:
-  push:
+  pull_request:
     branches:
-      - fix/sync-package-lock
+      - main
 
 permissions:
   contents: write
