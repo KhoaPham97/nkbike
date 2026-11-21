@@ -1,0 +1,39 @@
+name: Cloudflare Container Validation
+
+on:
+  push:
+    branches:
+      - cloudflare-backend-migration
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "worker.js"
+      - "wrangler.toml"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/cloudflare-container-validation.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Validate locked production dependencies
+        run: npm ci --omit=dev --no-audit --no-fund
+
+      - name: Validate Cloudflare Worker bundle and Wrangler config
+        run: npx --yes wrangler@4 deploy --dry-run
+
+      - name: Build Linux AMD64 backend container
+        run: docker build --platform linux/amd64 -t nkbike-cloudflare-validation .
