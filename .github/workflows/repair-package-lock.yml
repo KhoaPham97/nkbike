@@ -28,6 +28,9 @@ jobs:
       - name: Regenerate package-lock.json
         run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
 
+      - name: Verify clean install
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
       - name: Commit lockfile if changed
         run: |
           if git diff --quiet -- package-lock.json; then
