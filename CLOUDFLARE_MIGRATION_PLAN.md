@@ -36,7 +36,7 @@ The current application is not a drop-in Worker entrypoint:
 - Several routes import Node-oriented libraries and perform file/PDF/XLSX operations.
 - Six recurring jobs are started from the Node server startup path.
 
-A Cloudflare runtime adapter and dependency-by-dependency compatibility work are required. The MongoDB connection strategy must be validated against Cloudflare Workers' supported outbound TCP/Node compatibility before migrating data access. Do not assume Mongoose works unchanged.
+A Cloudflare runtime adapter and dependency-by-dependency compatibility work are required. Cloudflare's current MongoDB integration guide documents the native MongoDB driver and Mongoose 9+ inside Workers, with a Durable Object recommended to persist the MongoClient/Mongoose connection. This repository currently pins Mongoose 8.16.4, so the ORM version and all plugins/models must be validated and upgraded deliberately before use. Do not assume the current Mongoose version works unchanged. Cloudflare documents that Hyperdrive does not support MongoDB; use the documented TCP socket / Node compatibility path and Durable Object connection pattern.
 
 ## Proposed phases
 
